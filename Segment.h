@@ -47,23 +47,30 @@ class Segment{
   
   std::vector<int> projectToOtherViewpoints(const int pixel, const double viewpoint_movement);
   
-  Eigen::Matrix3d getUnwarpTransform(const std::vector<double> &CAMERA_PARAMETERS) const;
+  Eigen::Matrix3d getUnwarpTransform(const std::vector<double> &point_cloud, const std::vector<double> &CAMERA_PARAMETERS) const;
   
   bool getValidity() const { return validity_; };
   std::vector<int> getSegmentPixels() const;
   //int getNumSegmentPixels() const;
   
   bool checkPairwiseConvexity(const int pixel_1, const int pixel_2);
-  double predictColorLikelihood(const cv::Vec3b color) const;
   double getMaxColorLikelihood() const
   {
     return max_color_likelihood_;
   }
   
   
-  void refit(const cv::Mat &image, const std::vector<double> &point_cloud, const std::vector<double> &normals, const std::vector<double> &camera_parameters, const cv_utils::ImageMask &fitting_mask, const cv_utils::ImageMask &occluded_mask, const int segment_type);
+  void refit(const cv::Mat &image, const std::vector<double> &point_cloud, const std::vector<double> &normals, const std::vector<double> &camera_parameters, const cv_utils::ImageMask &fitting_mask, const cv_utils::ImageMask &occluded_mask, const std::vector<double> &pixel_weights, const int segment_type);
   
   cv_utils::ImageMask getFittingMask() const { return fitting_mask_; };
+
+  double calcColorFittingCost(const cv::Vec3b color) const;
+
+  //void setBehindRoomStructure(const bool behind_room_structure);
+  //bool getBehindRoomStructure() const;
+
+  double getConfidence() const;
+  
   
  private:
   int IMAGE_WIDTH_;
@@ -83,6 +90,8 @@ class Segment{
   
   cv::Ptr<cv::ml::EM> GMM_;
   double max_color_likelihood_;
+
+  std::vector<double> color_model_;
   
   
   cv_utils::ImageMask segment_mask_;
@@ -96,7 +105,10 @@ class Segment{
   std::shared_ptr<cv_utils::Histogram<double> > color_likelihood_histogram_;
   
   int segment_type_;
+  bool behind_room_structure_;
   BSplineSurface b_spline_surface_;
+
+  double segment_confidence_;
   
   
   void fitSegmentPlane(const cv::Mat &image, const std::vector<double> &point_cloud, const std::vector<double> &normals, const cv_utils::ImageMask &fitting_mask, const std::vector<double> &pixel_weights);
@@ -106,7 +118,12 @@ class Segment{
   void calcHistograms(const cv::Mat &image, const std::vector<double> &point_cloud, const std::vector<double> &normals);
   void writeSegmentImage(const std::string filename);
   void calcSegmentGrowthMap();
-  
+
+  void trainColorModel(const cv::Mat &image, const std::vector<int> &pixels);
+
+  double predictColorLikelihood(const cv::Vec3b color) const;
+
+  void calcConfidence(const std::vector<double> &point_cloud);
 };
 
 #endif

@@ -32,13 +32,13 @@ using Eigen::Vector3d;
 vector<int> deleteSmallSegments(const vector<int> &segmentation, const int width, const int small_segment_threshold);
 
 vector<double> readPointCloudFromObj(const string filename, const int image_width, const int image_height, const double rotation_angle);
-void savePointCloudAsPly(const vector<double> &point_cloud, const char *filename);
+void savePointCloudAsPly(const cv::Mat &image, const vector<double> &point_cloud, const char *filename);
 void savePointCloudAsMesh(const vector<double> &point_cloud, const char *filename);
 vector<int> loadSegmentation(const char *filename);
 void saveSegmentation(const vector<int> &segmentation, const char *filename);
 Mat drawSegmentationImage(const vector<int> &segmentation, const int width);
 Mat drawSegmentationImage(const vector<int> &segmentation, const int width, const Mat &image, const char type);
-vector<double> loadPointCloud(const char *filename);
+vector<double> loadPointCloud(const string &filename);
 void savePointCloud(const vector<double> &point_cloud, const char *filename);
 Mat drawDispImage(const vector<double> &point_cloud, const int width, const MatrixXd &projection_matrix);
 Mat drawDispImage(const vector<double> &point_cloud, const int width, const int height);

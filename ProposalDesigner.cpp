@@ -18,7 +18,7 @@ using namespace cv;
 using namespace cv_utils;
 
 
-ProposalDesigner::ProposalDesigner(const Mat &image, const vector<double> &point_cloud, const vector<double> &normals, const std::vector<double> &pixel_weights_3D, const vector<double> &camera_parameters, const int num_layers, const RepresenterPenalties penalties, const DataStatistics statistics, const int scene_index, const bool use_panorama) : image_(image), point_cloud_(point_cloud), normals_(normals), pixel_weights_3D_(pixel_weights_3D), IMAGE_WIDTH_(image.cols), IMAGE_HEIGHT_(image.rows), CAMERA_PARAMETERS_(camera_parameters), penalties_(penalties), statistics_(statistics), NUM_PIXELS_(image.cols * image.rows), NUM_LAYERS_(num_layers), SCENE_INDEX_(scene_index), NUM_ALL_PROPOSAL_ITERATIONS_(3), USE_PANORAMA_(use_panorama), ROOM_STRUCTURE_LAYER_INDEX_(num_layers - 1), NUM_PROPOSAL_TYPES_(5)
+ProposalDesigner::ProposalDesigner(const Mat &image, const vector<double> &point_cloud, const vector<double> &normals, const std::vector<double> &pixel_weights_3D, const vector<double> &camera_parameters, const int num_layers, const RepresenterPenalties penalties, const DataStatistics statistics, const int scene_index, const bool use_panorama) : image_(image), point_cloud_(point_cloud), normals_(normals), pixel_weights_3D_(pixel_weights_3D), IMAGE_WIDTH_(image.cols), IMAGE_HEIGHT_(image.rows), CAMERA_PARAMETERS_(camera_parameters), penalties_(penalties), statistics_(statistics), NUM_PIXELS_(image.cols * image.rows), NUM_LAYERS_(num_layers), SCENE_INDEX_(scene_index), NUM_ALL_PROPOSAL_ITERATIONS_(3), USE_PANORAMA_(use_panorama), ROOM_STRUCTURE_LAYER_INDEX_(num_layers - 1), NUM_PROPOSAL_TYPES_(4), NUM_PARALLEL_PROPOSALS_(5)
 {
   //layer_inpainter_ = unique_ptr<LayerInpainter>(new LayerInpainter(image_, segmentation_, surface_depths_, penalties_, false, true));
   //layer_estimator_ = unique_ptr<LayerEstimator>(new LayerEstimator(image_, point_cloud_, segmentation_, surface_depths_, NUM_LAYERS_, penalties_, surface_colors_, SCENE_INDEX_));
@@ -26,12 +26,20 @@ ProposalDesigner::ProposalDesigner(const Mat &image, const vector<double> &point
   
   //  calcSegmentations();
   
-  Mat blurred_image;
-  GaussianBlur(image_, blurred_image, cv::Size(3, 3), 0, 0);
-  blurred_hsv_image_ = blurred_image.clone();
+  // Mat blurred_image;
+  // GaussianBlur(image_, blurred_image, cv::Size(3, 3), 0, 0);
+  // blurred_hsv_image_ = blurred_image.clone();
+  //  blurred_hsv_image_ = image.clone();
   //  blurred_image.convertTo(blurred_hsv_image_, CV_32FC3, 1.0 / 255);
   //cvtColor(blurred_hsv_image_, blurred_hsv_image_, CV_BGR2HSV);
-  
+
+  cvtColor(image, image_Lab_, CV_BGR2Lab);
+  for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+    Vec3b color = image_Lab_.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_);
+    color[0] = round(color[0] * 1.0 / 3);
+    image_Lab_.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = color;
+  }
+
   initializeCurrentSolution();
   
   proposal_type_indices_ = vector<int>(NUM_PROPOSAL_TYPES_);
@@ -47,6 +55,14 @@ ProposalDesigner::~ProposalDesigner()
 
 void ProposalDesigner::setCurrentSolution(const vector<int> &current_solution_labels, const int current_solution_num_surfaces, const std::map<int, Segment> &current_solution_segments)
 {
+  // if (proposal_type_index_ == 1) {
+  //   previous_solution_labels_.push_back(current_solution_labels);
+  //   if (previous_solution_labels_.size() == NUM_PARALLEL_PROPOSALS_)
+  //     proposal_type_index_++;
+  //   return;
+  // }
+  
+
   //cout << "set current solution" << endl;
   
   //current_solution_ = current_solution;
@@ -116,6 +132,9 @@ void ProposalDesigner::setCurrentSolution(const vector<int> &current_solution_la
   
   current_solution_labels_ = new_current_solution_labels;
   current_solution_num_surfaces_ = new_current_solution_num_surfaces;
+
+  // if (current_solution_num_surfaces_ > 0)
+  //   proposal_type_index_ = (proposal_type_index_ + 1) % 4;
   
   // writeDispImageFromSegments(current_solution_labels_, current_solution_num_surfaces_, current_solution_segments_, NUM_LAYERS_, IMAGE_WIDTH_, IMAGE_HEIGHT_, "Test/disp_image_0_new.bmp");
   // Mat disp_image_1 = imread("Test/disp_image_0.bmp", 0);
@@ -139,11 +158,12 @@ bool ProposalDesigner::getProposal(int &iteration, vector<vector<int> > &proposa
   // }
   srand(time(0));
   proposal_iteration_ = iteration;
-  bool test = true;
+  bool test = false;
+  
   if (test) {
     //generateLayerSwapProposal();
-    //generateSegmentRefittingProposal();
-    generateDesiredProposal();
+    generateSingleSurfaceExpansionProposal(6, 0);
+    //generateDesiredProposal();
     proposal_labels = proposal_labels_;
     proposal_num_surfaces = proposal_num_surfaces_;
     proposal_segments = proposal_segments_;
@@ -201,7 +221,47 @@ bool ProposalDesigner::getProposal(int &iteration, vector<vector<int> > &proposa
     proposal_type = proposal_type_;
     return true;
   }
-  
+
+  if (false) {
+    bool generate_success = false;
+    while (true) {
+      switch (proposal_type_index_) {
+      case 0:
+        generate_success = generateSegmentAddingProposal();
+        //proposal_type_index_++;
+        break;
+      case 1:
+	generate_success = generateLayerSwapProposal();
+        //generate_success = generateSingleSurfaceExpansionProposal();
+	//if (generate_success == false)
+	//proposal_type_index_++;
+        break;
+      case 2:
+        generate_success = generateSolutionMergingProposal();
+        previous_solution_labels_.clear();
+        //proposal_type_index_++;
+        //generate_success = generateConcaveHullProposal(true);
+        break;
+        // if (randomProbability() < 1.0 / NUM_PROPOSAL_TYPES / pow(1 - 1.0 / NUM_PROPOSAL_TYPES, 3))
+        //   if (generateLayerSwapProposal() == true)
+        //     break;
+      case 3:
+        generate_success = generateSegmentRefittingProposal();
+        //proposal_type_index_ = 0;
+        break;
+      default:
+        return false;
+      }
+        
+      if (generate_success == true)
+        break;
+    }
+    proposal_labels = proposal_labels_;
+    proposal_num_surfaces = proposal_num_surfaces_;
+    proposal_segments = proposal_segments_;
+    proposal_type = proposal_type_;
+    return true;
+  }
   
   if (true) {
     int num_attempts = 0;
@@ -213,15 +273,18 @@ bool ProposalDesigner::getProposal(int &iteration, vector<vector<int> > &proposa
         break;
       case 1:
 	generate_success = generateConcaveHullProposal();
-	break;
+        break;
       case 2:
-        generate_success = generateSegmentRefittingProposal();
+	generate_success = generateLayerSwapProposal();
         break;
       case 3:
-        generate_success = generateLayerSwapProposal();
+        generate_success = generateSegmentRefittingProposal();
         break;
       case 4:
-        generate_success = generateBackwardMergingProposal();
+	//	generate_success = generateBackwardMergingProposal();
+        break;
+      case 5:
+	//generate_success = generateBehindRoomStructureProposal();
         break;
       }
       if (generate_success)
@@ -293,9 +356,9 @@ bool ProposalDesigner::getProposal(int &iteration, vector<vector<int> > &proposa
 	case 4:
 	  generate_success = generateSegmentAddingProposal();
 	  break;
-	case 5:
-	  generate_success = generateSingleSurfaceExpansionProposal();
-          break;
+	// case 5:
+	//   generate_success = generateSingleSurfaceExpansionProposal();
+        //   break;
 	  // case 6:
 	//   generate_success = generateBoundaryRefinementProposal();
 	//   break;
@@ -321,6 +384,35 @@ bool ProposalDesigner::getProposal(int &iteration, vector<vector<int> > &proposa
       first_attempt = false;
     }
   }
+  
+  proposal_labels = proposal_labels_;
+  proposal_num_surfaces = proposal_num_surfaces_;
+  proposal_segments = proposal_segments_;
+  proposal_type = proposal_type_;
+  return true;
+}
+
+bool ProposalDesigner::getRefinementProposal(int &iteration, vector<vector<int> > &proposal_labels, int &proposal_num_surfaces, map<int, Segment> &proposal_segments, string &proposal_type)
+{
+  // if (iteration != 2) {
+  //   cout << current_solution_num_surfaces_ << '\t' << current_solution_segments_.size() << endl;
+  //   exit(1);
+  // }
+  srand(time(0));
+  proposal_iteration_ = iteration;
+  
+  bool generate_success = false;
+  for (int expansion_segment_id = 0; expansion_segment_id < current_solution_num_surfaces_; expansion_segment_id++) {
+    if (explored_single_surface_expansion_types_.count(expansion_segment_id) > 0)
+      continue;
+    generate_success = generateSingleSurfaceExpansionProposal(expansion_segment_id, 0);
+    explored_single_surface_expansion_types_.insert(expansion_segment_id);
+    if (generate_success)
+      break;
+  }
+
+  if (generate_success == false)
+    return false;
   
   proposal_labels = proposal_labels_;
   proposal_num_surfaces = proposal_num_surfaces_;
@@ -360,6 +452,11 @@ vector<int> ProposalDesigner::getInitialLabels()
 {
   //generateEmptyRepresentationProposal();
   return proposal_labels_[0];
+}
+
+int ProposalDesigner::getNumSurfaces() const
+{
+  return current_solution_num_surfaces_;
 }
 
 void ProposalDesigner::convertProposalLabelsFormat()
@@ -586,6 +683,7 @@ bool ProposalDesigner::generateSegmentRefittingProposal()
       }
     }
   }
+
   
   static bool use_plane_or_bspline = false;
   use_plane_or_bspline = !use_plane_or_bspline;
@@ -608,7 +706,7 @@ bool ProposalDesigner::generateSegmentRefittingProposal()
 	int previous_segment_type = current_solution_segments_[segment_it->first].getSegmentType();
 	
         vector<int> fitting_pixels = fitting_mask.getPixels();
-        if (fitting_pixels.size() < statistics_.small_segment_num_pixels_threshold || (segment_type > 0 && fitting_pixels.size() > statistics_.bspline_surface_num_pixels_threshold && previous_segment_type == 0)) {
+        if (fitting_pixels.size() < statistics_.small_segment_num_pixels_threshold || (segment_type > 0 && fitting_pixels.size() > statistics_.bspline_surface_num_pixels_threshold)) {
 	  continue;
         }
 	
@@ -624,12 +722,13 @@ bool ProposalDesigner::generateSegmentRefittingProposal()
 	//imwrite("Test/fitting_mask_" + to_string(segment_it->first) + "_previous.bmp", previous_fitting_mask.drawMaskImage());
 	//imwrite("Test/fitting_mask_" + to_string(segment_it->first) + "_new.bmp", fitting_mask.drawMaskImage());
         Segment refitted_segment = Segment(IMAGE_WIDTH_, IMAGE_HEIGHT_, CAMERA_PARAMETERS_, statistics_, USE_PANORAMA_);
-	refitted_segment.refit(image_, point_cloud_, normals_, CAMERA_PARAMETERS_, fitting_mask, ImageMask(segment_layer_occluded_pixels[segment_it->first][layer_it->first], IMAGE_WIDTH_, IMAGE_HEIGHT_), segment_type);
+	refitted_segment.refit(image_Lab_, point_cloud_, normals_, CAMERA_PARAMETERS_, fitting_mask, ImageMask(segment_layer_occluded_pixels[segment_it->first][layer_it->first], IMAGE_WIDTH_, IMAGE_HEIGHT_), pixel_weights_3D_, segment_type);
 	if (refitted_segment.getValidity() == false)
 	  continue;
 	proposal_segments_[new_proposal_segment_index] = refitted_segment;
 	
 	cout << "segment refitting: " << '\t' << segment_it->first << '\t' << new_proposal_segment_index << '\t' << segment_type << endl;
+	//imwrite("Test/mask_" + to_string(new_proposal_segment_index) + ".bmp", fitting_mask.drawMaskImage());
 	// vector<int> segment_pixels;
 	// segment_pixels.insert(segment_pixels.end(), layer_it->second.begin(), layer_it->second.end());
 	// segment_pixels.insert(segment_pixels.end(), segment_layer_occluded_pixels[segment_it->first][layer_it->first].begin(), segment_layer_occluded_pixels[segment_it->first][layer_it->first].end());
@@ -642,11 +741,17 @@ bool ProposalDesigner::generateSegmentRefittingProposal()
       }
     }
   }
+
+  // for (map<int, Segment>::const_iterator segment_it = proposal_segments_.begin(); segment_it != proposal_segments_.end(); segment_it++)
+  //   //if (segment_it->first == 7)
+  //   cout << segment_it->first << '\t' << segment_it->second.checkPixelFitting(image_Lab_, point_cloud_, normals_, 23513) << '\t' << segment_it->second.calcPixelFittingCost(image_Lab_, point_cloud_, normals_, 23513, penalties_, 1, false) << endl;
+  // exit(1);
+
+  //imwrite("Test/mask_6.bmp", proposal_segments_[6].getMask().drawMaskImage());
+  //imwrite("Test/mask_12.bmp", proposal_segments_[12].getMask().drawMaskImage());
+  //cout << proposal_segments_[6].checkPixelFitting(image_, point_cloud_, normals_, 144 * IMAGE_WIDTH_ + 85) << '\t' <<   proposal_segments_[12].checkPixelFitting(image_, point_cloud_, normals_, 144 * IMAGE_WIDTH_ + 85) << endl;
+  //exit(1);
   
-  // imwrite("Test/mask_3.bmp", proposal_segments_[3].getMask().drawMaskImage());
-  // imwrite("Test/mask_5.bmp", proposal_segments_[5].getMask().drawMaskImage());
-  // imwrite("Test/mask_11.bmp", proposal_segments_[11].getMask().drawMaskImage());
-  // imwrite("Test/mask_26.bmp", proposal_segments_[26].getMask().drawMaskImage());
   // imwrite("Test/mask_28.bmp", proposal_segments_[28].getMask().drawMaskImage());
   // imwrite("Test/mask_45.bmp", proposal_segments_[45].getMask().drawMaskImage());
   // vector<double> plane = proposal_segments_[26].getPlane();
@@ -666,13 +771,41 @@ bool ProposalDesigner::generateSegmentRefittingProposal()
   // for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++)
   //   for (set<int>::const_iterator segment_it = layer_segments[layer_index].begin(); segment_it != layer_segments[layer_index].end(); segment_it++)
   //     cout << layer_index << '\t' << *segment_it << endl;
+
+
+  // set<int> new_segment_indices;
+  // for (int segment_index = current_solution_num_surfaces_; segment_index < proposal_segments_.size(); segment_index++)
+  //   new_segment_indices.insert(segment_index);
+  // set<int> behind_room_structure_segment_indices = findBehindRoomStructureSegments(IMAGE_WIDTH_, IMAGE_HEIGHT_, proposal_segments_, new_segment_indices, layer_pixel_segment_indices_map[ROOM_STRUCTURE_LAYER_INDEX_], statistics_, USE_PANORAMA_);
+  // for (set<int>::const_iterator segment_it = behind_room_structure_segment_indices.begin(); segment_it != behind_room_structure_segment_indices.end(); segment_it++) {
+  //   cout << "behind room structure: " << *segment_it << endl;
+  //   proposal_segments_.at(*segment_it).setBehindRoomStructure(true);
+  // }
   
   map<int, map<int, bool> > segment_layer_certainty_map;
   for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++)
     for (set<int>::const_iterator segment_it = layer_segments[layer_index].begin(); segment_it != layer_segments[layer_index].end(); segment_it++)
       segment_layer_certainty_map[*segment_it][layer_index] = true;
   
-  layer_pixel_segment_indices_map = fillLayers(blurred_hsv_image_, point_cloud_, normals_, proposal_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "segment_refitting_" + to_string(proposal_iteration_), layer_pixel_segment_indices_map);
+  // vector<double> plane_1 = proposal_segments_[12].getPlane();
+  // vector<double> plane_2 = proposal_segments_[6].getPlane();
+  // for (int c = 0; c < 4; c++)
+  //   cout << plane_1[c] << '\t' << plane_2[c] << endl;
+  // exit(1);
+  
+  layer_pixel_segment_indices_map = fillLayers(image_, image_Lab_, point_cloud_, normals_, proposal_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "segment_refitting_" + to_string(proposal_iteration_), layer_pixel_segment_indices_map);
+
+  // Mat mask_image_1 = Mat::zeros(IMAGE_HEIGHT_, IMAGE_WIDTH_, CV_8UC1);
+  // Mat mask_image_2 = Mat::zeros(IMAGE_HEIGHT_, IMAGE_WIDTH_, CV_8UC1);
+  // for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+  //   if (layer_pixel_segment_indices_map[1][pixel].count(6) > 0)
+  //     mask_image_1.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = 255;
+  //   if (layer_pixel_segment_indices_map[1][pixel].count(12) > 0)
+  //     mask_image_2.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = 255;
+  // }
+  // imwrite("Test/mask_image_6.bmp", mask_image_1);
+  // imwrite("Test/mask_image_12.bmp", mask_image_2);
+  // exit(1);
   
   proposal_num_surfaces_ = proposal_segments_.size();
   
@@ -750,68 +883,72 @@ bool ProposalDesigner::generateSegmentRefittingProposal()
   return true;
 }
 
-bool ProposalDesigner::generateSingleSurfaceExpansionProposal(const int denoted_expansion_segment_id)
+bool ProposalDesigner::generateSingleSurfaceExpansionProposal(const int denoted_expansion_segment_id, const int denoted_expansion_type)
 {
   cout << "generate single surface expansion proposal" << endl;
   proposal_type_ = "single_surface_expansion_proposal";
-  
-  if (single_surface_candidate_pixels_.size() == 0) {
-    single_surface_candidate_pixels_.assign(NUM_PIXELS_ * 2, -1);
-    for (int pixel = 0; pixel < NUM_PIXELS_ * 2; pixel++)
-      single_surface_candidate_pixels_[pixel] = pixel;
-  }
-  
+
   int expansion_segment_id = denoted_expansion_segment_id;
-  int expansion_type = rand() % 2;
-  if (current_solution_segments_.count(expansion_segment_id) == 0) {
-    //    int random_pixel = rand() % NUM_PIXELS_;
-    int random_pixel = single_surface_candidate_pixels_[rand() % single_surface_candidate_pixels_.size()];
-    int current_solution_label = current_solution_labels_[random_pixel % NUM_PIXELS_];
-    for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
-      int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
-      if (surface_id < current_solution_num_surfaces_) {
-	expansion_segment_id = surface_id;
-	break;
-      }
+  int expansion_type = denoted_expansion_type;
+
+  if (expansion_segment_id == -1 || expansion_type == -1) {
+    if (single_surface_candidate_pixels_.size() == 0) {
+      single_surface_candidate_pixels_.assign(NUM_PIXELS_ * 2, -1);
+      for (int pixel = 0; pixel < NUM_PIXELS_ * 2; pixel++)
+	single_surface_candidate_pixels_[pixel] = pixel;
     }
-    expansion_type = random_pixel / NUM_PIXELS_;
+  
+    expansion_type = rand() % 2;
+    if (current_solution_segments_.count(expansion_segment_id) == 0) {
+      //    int random_pixel = rand() % NUM_PIXELS_;
+      int random_pixel = single_surface_candidate_pixels_[rand() % single_surface_candidate_pixels_.size()];
+      int current_solution_label = current_solution_labels_[random_pixel % NUM_PIXELS_];
+      for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+	int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+	if (surface_id < current_solution_num_surfaces_) {
+	  expansion_segment_id = surface_id;
+	  break;
+	}
+      }
+      expansion_type = random_pixel / NUM_PIXELS_;
     
-    // map<int, double> segment_confidence_map;
-    // double confidence_sum = 0;
-    // for (map<int, Segment>::const_iterator segment_it = current_solution_segments_.begin(); segment_it != current_solution_segments_.end(); segment_it++) {
-    //   double confidence = segment_it->second.getConfidence();
-    //   segment_confidence_map[segment_it->first] = confidence;
-    //   confidence_sum += confidence;
+      // map<int, double> segment_confidence_map;
+      // double confidence_sum = 0;
+      // for (map<int, Segment>::const_iterator segment_it = current_solution_segments_.begin(); segment_it != current_solution_segments_.end(); segment_it++) {
+      //   double confidence = segment_it->second.getConfidence();
+      //   segment_confidence_map[segment_it->first] = confidence;
+      //   confidence_sum += confidence;
+      // }
+    
+      // double selected_confidence = randomProbability() * confidence_sum;
+      // confidence_sum = 0;
+    
+      // for (map<int, double>::const_iterator segment_it = segment_confidence_map.begin(); segment_it != segment_confidence_map.end(); segment_it++) {
+      //   confidence_sum += segment_it->second;
+      //   if (confidence_sum >= selected_confidence) {
+      // 	expansion_segment_id = segment_it->first;
+      // 	break;
+      //   }
+      // }
+      // assert(expansion_segment_id != -1);
+    }
+  
+  
+    // int num_attempts = 0;
+    // while (true) {
+    //   if (num_attempts >= current_solution_num_surfaces_)
+    //     return false;
+    //   num_attempts++;
+    //   expansion_segment_id = segment_id == -1 ? rand() % current_solution_num_surfaces_ : segment_id;
+  
+    //   if (current_solution_segments_.count(expansion_segment_id) == 0)
+    //     continue;
+  
+    //   if (current_solution_segments_[expansion_segment_id].getConfidence() < 0.5)
+    //     continue;
+    //   break;
     // }
-    
-    // double selected_confidence = randomProbability() * confidence_sum;
-    // confidence_sum = 0;
-    
-    // for (map<int, double>::const_iterator segment_it = segment_confidence_map.begin(); segment_it != segment_confidence_map.end(); segment_it++) {
-    //   confidence_sum += segment_it->second;
-    //   if (confidence_sum >= selected_confidence) {
-    // 	expansion_segment_id = segment_it->first;
-    // 	break;
-    //   }
-    // }
-    // assert(expansion_segment_id != -1);
   }
-  
-  
-  // int num_attempts = 0;
-  // while (true) {
-  //   if (num_attempts >= current_solution_num_surfaces_)
-  //     return false;
-  //   num_attempts++;
-  //   expansion_segment_id = segment_id == -1 ? rand() % current_solution_num_surfaces_ : segment_id;
-  
-  //   if (current_solution_segments_.count(expansion_segment_id) == 0)
-  //     continue;
-  
-  //   if (current_solution_segments_[expansion_segment_id].getConfidence() < 0.5)
-  //     continue;
-  //   break;
-  // }
   
   map<int, int> expansion_segment_layer_counter;
   bool is_occluded = false;
@@ -822,7 +959,7 @@ bool ProposalDesigner::generateSingleSurfaceExpansionProposal(const int denoted_
     for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
       int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
       if (surface_id == expansion_segment_id) {
-        expansion_segment_layer_counter[layer_index]++;
+	expansion_segment_layer_counter[layer_index]++;
 	if (is_visible == false) {
 	  is_occluded = true;
 	  break;
@@ -838,12 +975,32 @@ bool ProposalDesigner::generateSingleSurfaceExpansionProposal(const int denoted_
     if (*pixel_it / NUM_PIXELS_ != expansion_type || expansion_segment_visible_pixel_mask[*pixel_it % NUM_PIXELS_] == false)
       new_single_surface_candidate_pixels.push_back(*pixel_it);
   single_surface_candidate_pixels_ = new_single_surface_candidate_pixels;
+
+  // expansion_segment_id = -1;
+  // expansion_type = -1;  
+  // for (int type = 0; type < 2; type++) {
+  //   for (int segment_id = 0; segment_id < current_solution_num_surfaces_; segment_id++) {
+  //     if (explored_single_surface_expansion_types_.count(type * current_solution_num_surfaces_ + segment_id) == 0) {
+  // 	expansion_segment_id = segment_id;
+  // 	expansion_type = type;
+  // 	explored_single_surface_expansion_types_.insert(type * current_solution_num_surfaces_ + segment_id);
+  // 	break;
+  //     }
+  //   }
+  //   if (expansion_segment_id != -1)
+  //     break;
+  // }
+  // if (expansion_segment_id == -1) {
+  //   explored_single_surface_expansion_types_.clear();
+  //   return false;
+  // }
+
   
+  // if (expansion_segment_layer_counter.size() > 1 && expansion_type == 1)
+  //   return false;
+  // if (is_occluded && expansion_type == 0)
+  //   return false;
   
-  if (expansion_segment_layer_counter.size() > 1 && expansion_type == 1)
-    return false;
-  if (is_occluded && expansion_type == 0)
-    return false;
   
   // if (expansion_segment_layer_counter.size() > 1)
   //   expansion_type = 0;
@@ -864,10 +1021,12 @@ bool ProposalDesigner::generateSingleSurfaceExpansionProposal(const int denoted_
   }
   if (expansion_segment_layer_index == -1)
     return false;
-  
-  
+
+  //imwrite("Test/mask_image.bmp", current_solution_segments_[6].getMask().drawMaskImage());
+  //exit(1);
+  //expansion_type = 0;
   cout << "segment: " << expansion_segment_id << "\texpansion type: " << expansion_type << endl;
-  
+
   proposal_num_surfaces_ = current_solution_num_surfaces_;
   proposal_segments_ = current_solution_segments_;
   
@@ -895,6 +1054,7 @@ bool ProposalDesigner::generateSingleSurfaceExpansionProposal(const int denoted_
       for (int target_layer_index = 0; target_layer_index < expansion_segment_layer_index; target_layer_index++)
 	pixel_layer_surfaces_map[target_layer_index].insert(proposal_num_surfaces_);
     }
+    //pixel_layer_surfaces_map[1].erase(0);
     
     vector<int> pixel_proposals = calcPixelProposals(proposal_num_surfaces_, pixel_layer_surfaces_map);
     
@@ -981,24 +1141,42 @@ bool ProposalDesigner::generateLayerSwapProposal()
   //     } else
   // 	segment_layer_certainty_map[*segment_it][layer_index] = true;
 
-  segment_layer_certainty_map.clear();
-  for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++)
-    for (set<int>::const_iterator segment_it = layer_segments[layer_index].begin(); segment_it != layer_segments[layer_index].end(); segment_it++)
-      if (layer_index < NUM_LAYERS_ - 1)
-	segment_layer_certainty_map[*segment_it][layer_index] = true;
-      else
-	segment_layer_certainty_map[*segment_it][layer_index] = false;
   
-  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(blurred_hsv_image_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "layer_swap_" + to_string(proposal_iteration_));
+  // segment_layer_certainty_map.clear();
+  // for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++)
+  //   for (set<int>::const_iterator segment_it = layer_segments[layer_index].begin(); segment_it != layer_segments[layer_index].end(); segment_it++)
+  //     if (layer_index < NUM_LAYERS_ - 1)
+  // 	segment_layer_certainty_map[*segment_it][layer_index] = true;
+  //     else
+  // 	segment_layer_certainty_map[*segment_it][layer_index] = false;
+
   
+  //segment_layer_certainty_map[11].erase(1);
+  //segment_layer_certainty_map[11][2] = 1;
   
+  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(image_, image_Lab_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "layer_swap_" + to_string(proposal_iteration_));
+
+
+  // for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+  //   Mat mask_image = Mat::zeros(IMAGE_HEIGHT_, IMAGE_WIDTH_, CV_8UC1);
+  //   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+  //     int surface_id = current_solution_labels_[pixel] / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_  - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+  //     if (layer_pixel_segment_indices_map[layer_index][pixel].count(current_solution_num_surfaces_) > 0 || surface_id == current_solution_num_surfaces_)
+  // 	mask_image.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = 255;
+  //   }
+      
+  //   imwrite("Test/mask_image" + to_string(layer_index) + ".bmp", mask_image);
+  // }
+  // exit(1);
+
+    
   proposal_num_surfaces_ = current_solution_num_surfaces_;
   proposal_segments_ = current_solution_segments_;
   
   proposal_labels_.assign(NUM_PIXELS_, vector<int>());
   current_solution_indices_.assign(NUM_PIXELS_, 0);
   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
-    int current_solution_label = current_solution_labels_[pixel];    
+    int current_solution_label = current_solution_labels_[pixel];
     
     map<int, set<int> > pixel_layer_surfaces_map;
     for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
@@ -1007,7 +1185,8 @@ bool ProposalDesigner::generateLayerSwapProposal()
     }
     for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++)
       pixel_layer_surfaces_map[layer_index].insert(layer_pixel_segment_indices_map[layer_index][pixel].begin(), layer_pixel_segment_indices_map[layer_index][pixel].end());
-    
+
+    //pixel_layer_surfaces_map[2].erase(11);
     vector<int> pixel_proposals = calcPixelProposals(proposal_num_surfaces_, pixel_layer_surfaces_map);    
     
     vector<int> valid_pixel_proposals;
@@ -1081,15 +1260,17 @@ bool ProposalDesigner::generateConcaveHullProposal(const bool consider_backgroun
   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
     int segment_id = visible_segmentation[pixel];
     segment_num_pixels[segment_id]++;
-    if (current_solution_segments_.at(segment_id).checkPixelFitting(blurred_hsv_image_, point_cloud_, normals_, pixel))
+    if (current_solution_segments_.at(segment_id).checkPixelFitting(image_Lab_, point_cloud_, normals_, pixel))
       segment_num_fitting_pixels[segment_id]++;
   }
   set<int> invalid_segments;
-  for (map<int, int>::const_iterator segment_it = segment_num_pixels.begin(); segment_it != segment_num_pixels.end(); segment_it++)
-    if (segment_num_fitting_pixels[segment_it->first] < segment_it->second * NUM_FITTING_PIXELS_THRESHOLD_RATIO) {
-      invalid_segments.insert(segment_it->first);
-      cout << "invalid segments: " << segment_it->first << endl;
-    }
+  for (map<int, int>::const_iterator segment_it = segment_num_pixels.begin(); segment_it != segment_num_pixels.end(); segment_it++) {
+    //    if (segment_num_fitting_pixels[segment_it->first] < segment_it->second * NUM_FITTING_PIXELS_THRESHOLD_RATIO) {
+    //if (current_solution_segments_.at(segment_it->first).getBehindRoomStructure()) {
+    //invalid_segments.insert(segment_it->first);
+    //cout << "invalid segments: " << segment_it->first << endl;
+    //}
+  }
   
   map<int, map<int, bool> > segment_layer_certainty_map;
   if (false) {
@@ -1183,14 +1364,23 @@ bool ProposalDesigner::generateConcaveHullProposal(const bool consider_backgroun
   // 	segment_layer_certainty_map[segment_id][*layer_it] = true;
   //   }
   // }
-  
-  segment_layer_certainty_map = swapLayers(IMAGE_WIDTH_, IMAGE_HEIGHT_, current_solution_segments_, current_solution_labels_, NUM_LAYERS_, statistics_, USE_PANORAMA_, true, invalid_segments);
 
+
+  segment_layer_certainty_map = swapLayers(IMAGE_WIDTH_, IMAGE_HEIGHT_, current_solution_segments_, current_solution_labels_, NUM_LAYERS_, statistics_, USE_PANORAMA_, true, proposal_iteration_ == 1, invalid_segments);
+
+  if (proposal_iteration_ > 1) {
+    for (int segment_id = 0; segment_id < current_solution_num_surfaces_; segment_id++) {
+      set<int> layers = segment_layers[segment_id];
+      if (layers.size() == 1 && layers.count(ROOM_STRUCTURE_LAYER_INDEX_) > 0 && segment_layer_certainty_map[segment_id].count(ROOM_STRUCTURE_LAYER_INDEX_) == 0)
+  	segment_layer_certainty_map[segment_id][ROOM_STRUCTURE_LAYER_INDEX_] = false;
+    }
+  }
+  
   for (map<int, map<int, bool> >::const_iterator segment_it = segment_layer_certainty_map.begin(); segment_it != segment_layer_certainty_map.end(); segment_it++)
     for (map<int, bool>::const_iterator layer_it = segment_it->second.begin(); layer_it != segment_it->second.end(); layer_it++)
       cout << "concave hull: " << segment_it->first << '\t' << layer_it->first << '\t' << layer_it->second << endl;
 
-  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(blurred_hsv_image_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "concave_hull_" + to_string(proposal_iteration_));
+  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(image_, image_Lab_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "concave_hull_" + to_string(proposal_iteration_));
   
   
   proposal_num_surfaces_ = current_solution_num_surfaces_;
@@ -1212,6 +1402,8 @@ bool ProposalDesigner::generateConcaveHullProposal(const bool consider_backgroun
 
     //for (int target_layer_index = 0; target_layer_index < ROOM_STRUCTURE_LAYER_INDEX_; target_layer_index++)
     //pixel_layer_surfaces_map[target_layer_index].insert(proposal_num_surfaces_);
+
+    //pixel_layer_surfaces_map[2].erase(11);
     
     vector<int> pixel_proposals = calcPixelProposals(proposal_num_surfaces_, pixel_layer_surfaces_map);
     
@@ -1305,7 +1497,7 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
       for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
 	int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
 	if (surface_id < current_solution_num_surfaces_) {
-	  if (current_solution_segments_.at(surface_id).checkPixelFitting(blurred_hsv_image_, point_cloud_, normals_, pixel) == true)
+	  if (current_solution_segments_.at(surface_id).checkPixelFitting(image_Lab_, point_cloud_, normals_, pixel) == true)
 	    bad_fitting_pixel_mask_vec[pixel] = false;
 	  break;
 	}
@@ -1325,7 +1517,7 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
   if (segment_adding_type == 1) {
     for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
       if (bad_fitting_pixel_mask.at(pixel) == true)
-	pixel_weights[pixel] = current_solution_segments_[visible_surface_ids[pixel]].calcPixelFittingCost(image_, point_cloud_, normals_, pixel, penalties_, pixel_weights_3D_[pixel], visible_layer_indices[pixel] == ROOM_STRUCTURE_LAYER_INDEX_);
+	pixel_weights[pixel] = current_solution_segments_[visible_surface_ids[pixel]].calcPixelFittingCost(image_Lab_, point_cloud_, normals_, pixel, penalties_, pixel_weights_3D_[pixel], visible_layer_indices[pixel] == ROOM_STRUCTURE_LAYER_INDEX_);
       if (checkPointValidity(getPoint(point_cloud_, pixel)) == false)
 	pixel_weights[pixel] = 0;
     }
@@ -1345,7 +1537,6 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
   }
   
   imwrite("Test/bad_fitting_pixel_mask_image.bmp", bad_fitting_image);
-  
   
   proposal_segments_ = current_solution_segments_;
   
@@ -1370,9 +1561,10 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
       //   break;
       //cout << segment_type << '\t' << sum_fitted_pixel_weights << '\t' << SUM_FITTED_PIXEL_WEIGHTS_THRESHOLD << endl;
       //cout << fitting_mask.getPixels().size() << endl;
-      Segment segment(image_, point_cloud_, normals_, CAMERA_PARAMETERS_, fitting_mask, statistics_, pixel_weights, segment_type, USE_PANORAMA_);
-      
+      Segment segment(image_Lab_, point_cloud_, normals_, CAMERA_PARAMETERS_, fitting_mask, statistics_, pixel_weights, segment_type, USE_PANORAMA_);
+      //cout << "segment confidence: " << proposal_segment_index << '\t' << segment.getConfidence() << endl;
       ImageMask fitted_mask = segment.getMask();
+      //imwrite("Test/fitted_mask_" + to_string(proposal_segment_index) + ".bmp", fitted_mask.drawMaskImage());
       vector<int> fitted_pixels = fitted_mask.getPixels();
       //cout << fitted_pixels.size() << '\t' << fitting_mask.getPixels().size() << endl;
       //cout << fitted_pixels.size() << '\t' << segment.getVali	dity() << '\t' << fitting_mask.getPixels().size() << endl;
@@ -1434,6 +1626,12 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
     //segment_layer_certainty_map[segment_it->first][0] = true;
   } else {
     segment_layer_certainty_map = calcNewSegmentLayers(IMAGE_WIDTH_, IMAGE_HEIGHT_, proposal_segments_, current_solution_labels_, current_solution_num_surfaces_, new_segment_masks, NUM_LAYERS_, statistics_, USE_PANORAMA_);
+    
+    for (map<int, ImageMask>::const_iterator segment_it = new_segment_masks.begin(); segment_it != new_segment_masks.end(); segment_it++) {
+      segment_layer_certainty_map[segment_it->first].clear();
+      segment_layer_certainty_map[segment_it->first][0] = false;
+    }
+    
     layer_pixel_segment_indices_map.assign(NUM_LAYERS_, vector<set<int> >(NUM_PIXELS_));
     for (map<int, ImageMask>::const_iterator segment_it = new_segment_masks.begin(); segment_it != new_segment_masks.end(); segment_it++) {
       //assert(segment_layer_certainty_map[segment_it->first].size() == 1);
@@ -1473,7 +1671,17 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
     }
   }
 
-  layer_pixel_segment_indices_map = fillLayers(blurred_hsv_image_, point_cloud_, normals_, proposal_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "segment_adding_" + to_string(proposal_iteration_), layer_pixel_segment_indices_map);
+
+  // set<int> new_segment_indices;
+  // for (int segment_index = current_solution_num_surfaces_; segment_index < proposal_segments_.size(); segment_index++)
+  //   new_segment_indices.insert(segment_index);
+  // set<int> behind_room_structure_segment_indices = findBehindRoomStructureSegments(IMAGE_WIDTH_, IMAGE_HEIGHT_, proposal_segments_, new_segment_indices, layer_pixel_segment_indices_map[ROOM_STRUCTURE_LAYER_INDEX_], statistics_, USE_PANORAMA_);
+  // for (set<int>::const_iterator segment_it = behind_room_structure_segment_indices.begin(); segment_it != behind_room_structure_segment_indices.end(); segment_it++) {
+  //   cout << "behind room structure: " << *segment_it << endl;
+  //   proposal_segments_.at(*segment_it).setBehindRoomStructure(true);
+  // }
+
+  layer_pixel_segment_indices_map = fillLayers(image_, image_Lab_, point_cloud_, normals_, proposal_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "segment_adding_" + to_string(proposal_iteration_), layer_pixel_segment_indices_map, false);
   
   
   if (segment_adding_type == 0) {
@@ -1533,6 +1741,9 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
     
     for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++)
       pixel_layer_surfaces_map[layer_index].insert(layer_pixel_segment_indices_map[layer_index][pixel].begin(), layer_pixel_segment_indices_map[layer_index][pixel].end());
+
+    //    for (int layer_index = 0; layer_index < NUM_LAYERS_ - 1; layer_index++)
+    //pixel_layer_surfaces_map[layer_index].insert(proposal_num_surfaces_);
     
     if (segment_adding_type == 0 && layer_pixel_segment_indices_map[ROOM_STRUCTURE_LAYER_INDEX_][pixel].size() == 0)
       for (int new_segment_index = current_solution_num_surfaces_; new_segment_index < proposal_num_surfaces_; new_segment_index++)
@@ -1635,6 +1846,77 @@ bool ProposalDesigner::generateSegmentAddingProposal(const int denoted_segment_a
   
   return true;
 }
+
+// bool ProposalDesigner::generateDetailAddingProposal(const int denoted_segment_adding_type)
+// {
+//   cout << "generate detail adding proposal" << endl;
+//   proposal_type_ = "detail_adding_proposal";
+
+//   vector<double> visible_depths(NUM_PIXELS_, -1);
+//   vector<int> visible_surface_ids(NUM_PIXELS_, -1);
+//   vector<int> visible_layer_indices(NUM_PIXELS_, -1);
+//   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+//     int current_solution_label = current_solution_labels_[pixel];
+//     for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+//       int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+//       if (surface_id < current_solution_num_surfaces_) {
+//         double depth = current_solution_segments_[surface_id].getDepth(pixel);
+//         visible_depths[pixel] = depth;
+//         visible_surface_ids[pixel] = surface_id;
+//         visible_layer_indices[pixel] = layer_index;
+//         break;
+//       }
+//     }
+//   }
+//   vector<set<int> > layer_segments(NUM_LAYERS_);
+//   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+//     int current_solution_label = current_solution_labels_[pixel];
+//     for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+//       int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+//       if (surface_id < current_solution_num_surfaces_) {
+//         layer_segments[layer_index].insert(surface_id);
+//       }
+//     }
+//   }
+  
+//   vector<vector<int> > layer_bad_fitting_pixels(NUM_LAYERS_);
+//   if (segment_adding_type == 1) {
+//     for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+//       int current_solution_label = current_solution_labels_[pixel];
+//       for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+//         int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+//         if (surface_id < current_solution_num_surfaces_) {
+//           if (current_solution_segments_.at(surface_id).checkPixelFitting(image_Lab_, point_cloud_, normals_, pixel) == false && (layer_index != ROOM_STRUCTURE_LAYER_INDEX_ || visible_depths[pixel] < current_solution_segments_.at(surface_id).getDepth(pixel) + statistics_.depth_conflict_threshold))
+// 	    layer_bad_fitting_pixels[layer_index].push_back(pixel);
+//           break;
+//         }
+//       }
+//     }
+//   }
+
+//   vector<double> pixel_weights(NUM_PIXELS_, 1);
+//   if (segment_adding_type == 1) {
+//     for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+//       if (bad_fitting_pixel_mask.at(pixel) == true)
+//         pixel_weights[pixel] = current_solution_segments_[visible_surface_ids[pixel]].calcPixelFittingCost(image_Lab_, point_cloud_, normals_, pixel, penalties_, pixel_weights_3D_[pixel], visible_layer_indices[pixel] == ROOM_STRUCTURE_LAYER_INDEX_);
+//       if (checkPointValidity(getPoint(point_cloud_, pixel)) == false)
+//         pixel_weights[pixel] = 0;
+//     }
+//   }
+
+
+//   for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+//     ImageMask bad_fitting_pixel_mask(layer_bad_fitting_pixels, IMAGE_WIDTH_, IMAGE_HEIGHT_);
+//     bad_fitting_pixel_mask -= getInvalidPointMask(point_cloud_, IMAGE_WIDTH_, IMAGE_HEIGHT_);
+//     // for (int iteration = 0; iteration < 1; iteration++) {
+//     //   bad_fitting_pixel_mask.erode();
+//     //   bad_fitting_pixel_mask.dilate();
+//     // }
+
+//     for (int num_planes = 1; num_planes <= 2; num_planes++) {
+//     }
+//   }  
+// }
 
 bool ProposalDesigner::generateStructureExpansionProposal(const int denoted_expansion_layer_index, const int denoted_expansion_pixel)
 {
@@ -1776,8 +2058,10 @@ bool ProposalDesigner::generateBackwardMergingProposal(const int denoted_target_
 	segment_layer_certainty_map[*segment_it][ROOM_STRUCTURE_LAYER_INDEX_] = false;
       else
 	segment_layer_certainty_map[*segment_it][ROOM_STRUCTURE_LAYER_INDEX_] = true;
-  
-  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(blurred_hsv_image_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, false, false, "backward_merging_" + to_string(proposal_iteration_));
+
+  set<int> erosion_layers;
+  //erosion_layers.insert(ROOM_STRUCTURE_LAYER_INDEX_);
+  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(image_, image_Lab_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, true, false, "backward_merging_" + to_string(proposal_iteration_));
   
   
   proposal_num_surfaces_ = current_solution_num_surfaces_;
@@ -1803,6 +2087,114 @@ bool ProposalDesigner::generateBackwardMergingProposal(const int denoted_target_
       if (checkLabelValidity(pixel, *label_it, proposal_num_surfaces_, proposal_segments_) == true)
         valid_pixel_proposals.push_back(*label_it);
     
+    if (valid_pixel_proposals.size() == 0) {
+      cout << "empty proposal at pixel: " << pixel << endl;
+      exit(1);
+    }      
+    
+    proposal_labels_[pixel] = valid_pixel_proposals;
+    
+    if (current_solution_num_surfaces_ > 0) {
+      current_solution_indices_[pixel] = find(valid_pixel_proposals.begin(), valid_pixel_proposals.end(), convertToProposalLabel(current_solution_label)) - valid_pixel_proposals.begin();
+      if (current_solution_indices_[pixel] == valid_pixel_proposals.size()) {
+        cout << "has no current solution label at pixel: " << pixel << endl;
+        exit(1);
+      }
+    }
+  }
+  
+  //addSegmentLayerProposals(false);
+  addIndicatorVariables();
+  
+  return true;
+}
+
+bool ProposalDesigner::generateBehindRoomStructureProposal()
+{  
+  cout << "generate behind room structure proposal" << endl;
+  proposal_type_ = "behind_room_structure_proposal";
+
+  vector<vector<set<int> > > layer_pixel_segment_indices_map(NUM_LAYERS_, vector<set<int> >(NUM_PIXELS_));
+  vector<set<int> > visible_pixel_segment_indices_map(NUM_PIXELS_);
+  for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+    int current_solution_label = current_solution_labels_[pixel];
+    bool is_visible = true;
+    for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+      int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+      if (surface_id < current_solution_num_surfaces_) {
+        layer_pixel_segment_indices_map[layer_index][pixel].insert(surface_id);
+	if (is_visible) {
+	  visible_pixel_segment_indices_map[pixel].insert(surface_id);
+	  is_visible = false;
+	}
+      }
+    }
+  }
+
+  set<int> new_segment_indices;
+  for (int segment_index = 0; segment_index < current_solution_num_surfaces_; segment_index++)
+    new_segment_indices.insert(segment_index);
+  vector<set<int> > pixel_segment_indices_map(NUM_PIXELS_);
+  
+  set<int> behind_room_structure_segment_indices = findBehindRoomStructureSegments(IMAGE_WIDTH_, IMAGE_HEIGHT_, current_solution_segments_, new_segment_indices, visible_pixel_segment_indices_map, statistics_, USE_PANORAMA_);
+  for (set<int>::const_iterator segment_it = behind_room_structure_segment_indices.begin(); segment_it != behind_room_structure_segment_indices.end(); segment_it++)
+    cout << "behind room structure: " << *segment_it << endl;
+  //behind_room_structure_segment_indices.clear();
+  //exit(1);
+  
+  proposal_segments_ = current_solution_segments_;
+  int proposal_segment_index = current_solution_num_surfaces_;
+  map<int, int> segment_index_map;
+  for (set<int>::const_iterator segment_it = behind_room_structure_segment_indices.begin(); segment_it != behind_room_structure_segment_indices.end(); segment_it++) {
+    Segment segment = current_solution_segments_[*segment_it];
+    //segment.setBehindRoomStructure(true);
+    proposal_segments_[proposal_segment_index] = segment;
+    segment_index_map[*segment_it] = proposal_segment_index;
+    proposal_segment_index++;
+  }
+
+  proposal_num_surfaces_ = proposal_segments_.size();
+  
+  for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+    for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+      set<int> segment_indices = layer_pixel_segment_indices_map[layer_index][pixel];
+      set<int> new_segment_indices;
+      for (set<int>::const_iterator segment_it = segment_indices.begin(); segment_it != segment_indices.end(); segment_it++) {
+	if (*segment_it < current_solution_num_surfaces_) {
+	  new_segment_indices.insert(*segment_it);
+	  if (segment_index_map.count(*segment_it) > 0)
+	    new_segment_indices.insert(segment_index_map[*segment_it]);
+	} else
+	  new_segment_indices.insert(proposal_num_surfaces_);
+      }
+      layer_pixel_segment_indices_map[layer_index][pixel] = new_segment_indices;
+    }
+  }
+  
+  
+  proposal_labels_.assign(NUM_PIXELS_, vector<int>());
+  current_solution_indices_.assign(NUM_PIXELS_, 0);
+  for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+    int current_solution_label = current_solution_labels_[pixel];
+    
+    map<int, set<int> > pixel_layer_surfaces_map;
+    for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+      int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+      if (surface_id < current_solution_num_surfaces_)
+	pixel_layer_surfaces_map[layer_index].insert(surface_id);
+      else
+	pixel_layer_surfaces_map[layer_index].insert(proposal_num_surfaces_);
+    }
+    for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++)
+      pixel_layer_surfaces_map[layer_index].insert(layer_pixel_segment_indices_map[layer_index][pixel].begin(), layer_pixel_segment_indices_map[layer_index][pixel].end());
+    
+    vector<int> pixel_proposals = calcPixelProposals(proposal_num_surfaces_, pixel_layer_surfaces_map);
+    
+    vector<int> valid_pixel_proposals;
+    for (vector<int>::const_iterator label_it = pixel_proposals.begin(); label_it != pixel_proposals.end(); label_it++)
+      if (checkLabelValidity(pixel, *label_it, proposal_num_surfaces_, proposal_segments_) == true)
+        valid_pixel_proposals.push_back(*label_it);
+
     if (valid_pixel_proposals.size() == 0) {
       cout << "empty proposal at pixel: " << pixel << endl;
       exit(1);
@@ -1900,7 +2292,7 @@ bool ProposalDesigner::generateBoundaryRefinementProposal()
 	    //   cout << segment_depth << '\t' << visible_depths[*neighbor_pixel_it] << endl;
 	    //   exit(1);
 	    // }
-	    if ((segment_depth > visible_depths[*neighbor_pixel_it] - statistics_.depth_conflict_threshold && segment_depth < background_depths[*neighbor_pixel_it] + statistics_.depth_conflict_threshold) || current_solution_segments_[*segment_it].checkPixelFitting(blurred_hsv_image_, point_cloud_, normals_, *neighbor_pixel_it)) {
+	    if ((segment_depth > visible_depths[*neighbor_pixel_it] - statistics_.depth_conflict_threshold && segment_depth < background_depths[*neighbor_pixel_it] + statistics_.depth_conflict_threshold) || current_solution_segments_[*segment_it].checkPixelFitting(image_Lab_, point_cloud_, normals_, *neighbor_pixel_it)) {
 	      new_pixel_segment_indices_map[*neighbor_pixel_it].insert(*segment_it);
 	      has_change = true;
 	    }
@@ -2035,12 +2427,98 @@ bool ProposalDesigner::generateBoundaryRefinementProposal()
   return true;
 }
 
+bool ProposalDesigner::generateSolutionMergingProposal()
+{
+  cout << "generate solution merging proposal" << endl;
+  proposal_type_ = "single_solution_merging_proposal";
+  
+  proposal_num_surfaces_ = current_solution_num_surfaces_;
+  proposal_segments_ = current_solution_segments_;
+  
+  proposal_labels_.assign(NUM_PIXELS_, vector<int>());
+  current_solution_indices_.assign(NUM_PIXELS_, 0);
+  for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+    map<int, set<int> > pixel_layer_surfaces_map;
+    for (vector<vector<int> >::const_iterator previous_solution_it = previous_solution_labels_.begin(); previous_solution_it != previous_solution_labels_.end(); previous_solution_it++) {
+      for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+        int surface_id = previous_solution_it->at(pixel) / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+        pixel_layer_surfaces_map[layer_index].insert(surface_id);
+      }
+    }
+    //for (int target_layer_index = 0; target_layer_index < expansion_segment_layer_index; target_layer_index++)
+    //pixel_layer_surfaces_map[target_layer_index].insert(proposal_num_surfaces_);
+    
+    vector<int> pixel_proposals = calcPixelProposals(proposal_num_surfaces_, pixel_layer_surfaces_map);
+    
+    vector<int> valid_pixel_proposals;
+    for (vector<int>::const_iterator label_it = pixel_proposals.begin(); label_it != pixel_proposals.end(); label_it++)
+      if (checkLabelValidity(pixel, *label_it, proposal_num_surfaces_, proposal_segments_) == true)
+        valid_pixel_proposals.push_back(*label_it);
+    
+    if (valid_pixel_proposals.size() == 0) {
+      cout << "empty proposal at pixel: " << pixel << endl;
+      exit(1);
+    }      
+    
+    proposal_labels_[pixel] = valid_pixel_proposals;
+    
+    
+    // if (pixel == 132 * IMAGE_WIDTH_ + 57) {
+    //   for (vector<int>::const_iterator label_it = valid_pixel_proposals.begin(); label_it != valid_pixel_proposals.end(); label_it++) {
+    //  for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+    //    int proposal_surface_id = *label_it / static_cast<int>(pow(proposal_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (proposal_num_surfaces_ + 1);
+    //    cout << proposal_surface_id << '\t';
+    //  }
+    //  cout << endl;
+    //   }
+    //   exit(1);
+    // }
+  }
+  
+  addIndicatorVariables();
+  
+  return true;
+}
+
 bool ProposalDesigner::generateDesiredProposal()
 {
   cout << "generate desired proposal" << endl;
   proposal_type_ = "desired_proposal";
 
-  //cout << current_solution_segments_[1].calcPixelFittingCost(blurred_hsv_image_, point_cloud_, normals_, 4642, penalties_, 1, false) << '\t' << current_solution_segments_[4].calcPixelFittingCost(blurred_hsv_image_, point_cloud_, normals_, 4642, penalties_, 1, false) << endl;
+  // vector<int> visible_surface_ids(NUM_PIXELS_, -1);
+  // vector<int> visible_layer_indices(NUM_PIXELS_, -1);
+  // for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+  //   int current_solution_label = current_solution_labels_[pixel];
+  //   for (int layer_index = 0; layer_index < NUM_LAYERS_; layer_index++) {
+  //     int surface_id = current_solution_label / static_cast<int>(pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - layer_index)) % (current_solution_num_surfaces_ + 1);
+  //     if (surface_id < current_solution_num_surfaces_) {
+  //       double depth = current_solution_segments_[surface_id].getDepth(pixel);
+  //       visible_surface_ids[pixel] = surface_id;
+  //       visible_layer_indices[pixel] = layer_index;
+  //       break;
+  //     }
+  //   }
+  // }
+  
+
+  // Mat bad_fitting_image = Mat::zeros(IMAGE_HEIGHT_, IMAGE_WIDTH_, CV_8UC1);
+  // for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+  //   double pixel_fitting_cost = current_solution_segments_[visible_surface_ids[pixel]].calcPixelFittingCost(image_Lab_, point_cloud_, normals_, pixel, penalties_, pixel_weights_3D_[pixel], visible_layer_indices[pixel] == ROOM_STRUCTURE_LAYER_INDEX_) * penalties_.data_cost_weight;
+  //   bad_fitting_image.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = min(pixel_fitting_cost, 255.0);
+  // }
+  
+  // imwrite("Test/pixel_fitting_cost_image.bmp", bad_fitting_image);
+  // exit(1);
+  
+  //testColorLikelihood();
+  //testColorModels();
+  //imwrite("Test/mask_image_5.bmp", current_solution_segments_[5].getMask().drawMaskImage());
+  //imwrite("Test/mask_image_8.bmp", current_solution_segments_[8].getMask().drawMaskImage());
+  //imwrite("Test/mask_image_11.bmp", current_solution_segments_[11].getMask().drawMaskImage());
+  //cout << current_solution_segments_[5].calcPixelFittingCost(image_Lab_, point_cloud_, normals_, 16115, penalties_, 1, false) << '\t' << current_solution_segments_[8].calcPixelFittingCost(image_Lab_, point_cloud_, normals_, 16115, penalties_, 1, false) << '\t' << current_solution_segments_[11].calcPixelFittingCost(image_Lab_, point_cloud_, normals_, 16115, penalties_, 1, false) << endl;
+  //exit(1);
+
+  //imwrite("Test/mask_image.bmp", current_solution_segments_[6].getMask().drawMaskImage());
   //exit(1);
   
   proposal_num_surfaces_ = current_solution_num_surfaces_;
@@ -2071,14 +2549,31 @@ bool ProposalDesigner::generateDesiredProposal()
     // if (current_solution_segments_[1].getDepth(pixel) < current_solution_segments_[layer_2_surface_id].getDepth(pixel))
     //   proposal_label += (1 - layer_2_surface_id) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 2);
     
-    //if (layer_2_surface_id == 12)
-    //proposal_label += (current_solution_num_surfaces_ - layer_2_surface_id) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 2);
-    //proposal_label += (12 - layer_3_surface_id) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 3);
+    // if (layer_1_surface_id == 0) {
+    //   proposal_label += (current_solution_num_surfaces_ - layer_1_surface_id) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 1);
+    // }
+    //if (layer_3_surface_id == 4) {
+    //proposal_label += (3 - layer_3_surface_id) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 3);
+    //}
     
-    if (layer_2_surface_id == 1)
-      proposal_label += (current_solution_num_surfaces_ - layer_2_surface_id) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 2);
-    proposal_labels_[pixel].push_back(current_solution_label);
+    if (layer_3_surface_id == 2)
+      proposal_label += (4 - layer_3_surface_id) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 3);
+    
+    //if (pixel == 23513)
+    //proposal_label += (7 - current_solution_num_surfaces_) * pow(current_solution_num_surfaces_ + 1, NUM_LAYERS_ - 1 - 1);
+    
+    
+    //    proposal_labels_[pixel].push_back(current_solution_label);
+    //continue;
+
     proposal_labels_[pixel].push_back(proposal_label);
+    
+    // if (proposal_label % (current_solution_num_surfaces_ + 1) == 2)
+    // proposal_labels_[pixel].push_back(proposal_label - 2);
+    // if (proposal_label % (current_solution_num_surfaces_ + 1) == 3)
+    // proposal_labels_[pixel].push_back(proposal_label - 3);
+    // if (proposal_label % (current_solution_num_surfaces_ + 1) == 4)
+    // proposal_labels_[pixel].push_back(proposal_label -4);
   }
   //  proposal_segments_[2].refitSegment(image_, point_cloud_, visible_pixels);
   
@@ -2154,7 +2649,7 @@ bool ProposalDesigner::generateRandomMoveProposal()
     cout << "segment layer map: " << segment_id << '\t' << segment_layers[segment_id] << endl;
   }
   
-  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(blurred_hsv_image_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, true, true, "random_move_" + to_string(proposal_iteration_));
+  vector<vector<set<int> > > layer_pixel_segment_indices_map = fillLayers(image_, image_Lab_, point_cloud_, normals_, current_solution_segments_, penalties_, statistics_, NUM_LAYERS_, current_solution_labels_, current_solution_num_surfaces_, segment_layer_certainty_map, USE_PANORAMA_, true, true, "random_move_" + to_string(proposal_iteration_));
   
   
   //vector<vector<set<int> > > layer_pixel_segment_indices_map(NUM_LAYERS_, vector<set<int> >(NUM_PIXELS_));
@@ -2490,7 +2985,7 @@ bool ProposalDesigner::generatePixelGrowthProposal()
   
   for (int surface_id_1 = 0; surface_id_1 < current_solution_num_surfaces_; surface_id_1++) {
     for (int surface_id_2 = surface_id_1 + 1; surface_id_2 < current_solution_num_surfaces_; surface_id_2++) {
-      if (current_solution_segments_.at(surface_id_1).getSegmentType() > 0 || current_solution_segments_.at(surface_id_2).getSegmentType() > 0)
+      if (current_solution_segments_.at(surface_id_1).getSegmentType() != 0 || current_solution_segments_.at(surface_id_2).getSegmentType() != 0)
 	continue;
       vector<double> plane_1 = current_solution_segments_.at(surface_id_1).getPlane();
       vector<double> plane_2 = current_solution_segments_.at(surface_id_2).getPlane();
@@ -2638,7 +3133,7 @@ bool ProposalDesigner::generatePixelGrowthProposal()
 	      for (set<int>::const_iterator segment_it = pixel_segment_indices_map[pixel].begin(); segment_it != pixel_segment_indices_map[pixel].end(); segment_it++) {
 		//if (*segment_it == 2 && *neighbor_pixel_it == 22370)
 		//exit(1);
-		if (*segment_it == current_solution_num_surfaces_ || new_pixel_segment_indices_map[*neighbor_pixel_it].count(*segment_it) > 0 || current_solution_segments_.at(*segment_it).getSegmentType() > 0)
+		if (*segment_it == current_solution_num_surfaces_ || new_pixel_segment_indices_map[*neighbor_pixel_it].count(*segment_it) > 0 || current_solution_segments_.at(*segment_it).getSegmentType() != 0)
 		  continue;
 		double segment_neighbor_depth = current_solution_segments_[*segment_it].getDepth(*neighbor_pixel_it);
 		if (segment_neighbor_depth < 0)
@@ -2686,7 +3181,7 @@ bool ProposalDesigner::generatePixelGrowthProposal()
 		//   exit(1);
 		// }
 		  
-		if ((segment_neighbor_depth < frontal_neighbor_depth - statistics_.depth_conflict_threshold || segment_neighbor_depth > backward_neighbor_depth + statistics_.depth_conflict_threshold) && current_solution_segments_[*segment_it].checkPixelFitting(blurred_hsv_image_, point_cloud_, normals_, *neighbor_pixel_it) == false && checkPointValidity(getPoint(point_cloud_, *neighbor_pixel_it)))
+		if ((segment_neighbor_depth < frontal_neighbor_depth - statistics_.depth_conflict_threshold || segment_neighbor_depth > backward_neighbor_depth + statistics_.depth_conflict_threshold) && current_solution_segments_[*segment_it].checkPixelFitting(image_Lab_, point_cloud_, normals_, *neighbor_pixel_it) == false && checkPointValidity(getPoint(point_cloud_, *neighbor_pixel_it)))
 		  continue;
 		  
 		  
@@ -2780,7 +3275,7 @@ bool ProposalDesigner::generatePixelGrowthProposal()
 	    vector<int> neighbor_pixels = findNeighbors(pixel, IMAGE_WIDTH_, IMAGE_HEIGHT_, USE_PANORAMA_);
 	    for (vector<int>::const_iterator neighbor_pixel_it = neighbor_pixels.begin(); neighbor_pixel_it != neighbor_pixels.end(); neighbor_pixel_it++) {
 	      for (set<int>::const_iterator segment_it = pixel_segment_indices_map[pixel].begin(); segment_it != pixel_segment_indices_map[pixel].end(); segment_it++) {
-		if (*segment_it == current_solution_num_surfaces_ || new_pixel_segment_indices_map[*neighbor_pixel_it].count(*segment_it) > 0 || current_solution_segments_.at(*segment_it).getSegmentType() > 0)
+		if (*segment_it == current_solution_num_surfaces_ || new_pixel_segment_indices_map[*neighbor_pixel_it].count(*segment_it) > 0 || current_solution_segments_.at(*segment_it).getSegmentType() != 0)
 		  continue;
 		double segment_neighbor_depth = current_solution_segments_[*segment_it].getDepth(*neighbor_pixel_it);
 		if (*segment_it == 12 && false) {
@@ -2824,7 +3319,7 @@ bool ProposalDesigner::generatePixelGrowthProposal()
 		if (*segment_it == 12 && false)
 		  cout << "backward neighbor depth: " << backward_neighbor_depth << endl;
 		  
-		if ((segment_neighbor_depth < frontal_neighbor_depth - statistics_.depth_conflict_threshold || segment_neighbor_depth > backward_neighbor_depth + statistics_.depth_conflict_threshold) && current_solution_segments_[*segment_it].checkPixelFitting(blurred_hsv_image_, point_cloud_, normals_, *neighbor_pixel_it) == false)
+		if ((segment_neighbor_depth < frontal_neighbor_depth - statistics_.depth_conflict_threshold || segment_neighbor_depth > backward_neighbor_depth + statistics_.depth_conflict_threshold) && current_solution_segments_[*segment_it].checkPixelFitting(image_Lab_, point_cloud_, normals_, *neighbor_pixel_it) == false)
 		  continue;
 		  
 		vector<double> point = current_solution_segments_[*segment_it].getSegmentPoint(pixel);
@@ -3210,7 +3705,7 @@ bool ProposalDesigner::generatePixelGrowthProposal()
 		if (new_pixel_segment_indices_map[*neighbor_pixel_it].count(*segment_it) > 0)
 		  continue;
 		//if (*segment_it == current_solution_num_surfaces_ || current_solution_segments_[*segment_it].getDepth(*neighbor_pixel_it) > 0)
-		if (*segment_it != current_solution_num_surfaces_ && current_solution_segments_[*segment_it].checkPixelFitting(image_, point_cloud_, normals_, pixel))
+		if (*segment_it != current_solution_num_surfaces_ && current_solution_segments_[*segment_it].checkPixelFitting(image_Lab_, point_cloud_, normals_, pixel))
 		  new_pixel_segment_indices_map[*neighbor_pixel_it].insert(*segment_it);
 	      }
 	    }
@@ -3389,12 +3884,129 @@ void ProposalDesigner::testColorLikelihood()
 {
   Mat color_likelihood_image = Mat::zeros(IMAGE_HEIGHT_, IMAGE_WIDTH_, CV_8UC1);
   for (int pixel = 0; pixel < IMAGE_WIDTH_ * IMAGE_HEIGHT_; pixel++) {
-    double color_likelihood = current_solution_segments_[current_solution_labels_[pixel] % (current_solution_num_surfaces_ + 1)].predictColorLikelihood(image_.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_));
-    double max_color_likelihood = current_solution_segments_[current_solution_labels_[pixel] % (current_solution_num_surfaces_ + 1)].getMaxColorLikelihood();
+    //double color_likelihood = current_solution_segments_[current_solution_labels_[pixel] % (current_solution_num_surfaces_ + 1)].predictColorLikelihood(image_.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_));
+    //double max_color_likelihood = current_solution_segments_[current_solution_labels_[pixel] % (current_solution_num_surfaces_ + 1)].getMaxColorLikelihood();
+    double color_likelihood = 1; //current_solution_segments_[8].predictColorLikelihood(image_.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_));
+    double max_color_likelihood = current_solution_segments_[8].getMaxColorLikelihood();
     //assert(color_likelihood <= max_color_likelihood);
     if (color_likelihood > max_color_likelihood + 0.0001)
       cout << pixel << '\t' << color_likelihood << '\t' << max_color_likelihood << '\t' << current_solution_labels_[pixel] % (current_solution_num_surfaces_ + 1) << endl;
-    color_likelihood_image.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = min((max_color_likelihood - color_likelihood) / statistics_.pixel_fitting_color_likelihood_threshold, 1.0) * 255;
+    //color_likelihood_image.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = (1 - min((max_color_likelihood - color_likelihood) / statistics_.pixel_fitting_color_likelihood_threshold, 1.0)) * 255;
+    color_likelihood_image.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = (1 - min((max_color_likelihood - color_likelihood) / 100, 1.0)) * 255;
   }
   imwrite("Test/color_likelihood_image.bmp", color_likelihood_image);
+}
+
+vector<double> ProposalDesigner::fitColorPlane(const Mat &image, const ImageMask &image_mask)
+{
+  const int IMAGE_WIDTH = image.cols;
+  const int IMAGE_HEIGHT = image.rows;
+  vector<int> pixels = image_mask.getPixels();
+  vector<double> points;
+  for (int i = 0; i < pixels.size(); i++) {
+    int pixel = pixels[i];
+    int x = pixel % IMAGE_WIDTH;
+    int y = pixel / IMAGE_WIDTH;
+    Vec3b color = image.at<Vec3b>(y, x);
+    vector<double> point(5);
+    point[0] = x;
+    point[1] = y;
+    for (int c = 0; c < 3; c++)
+      point[c + 2] = color[c];
+    points.insert(points.end(), point.begin(), point.end());
+  }
+    
+  VectorXd center(5);
+  center << 0, 0, 0, 0, 0;
+  for (int i = 0; i < pixels.size(); i++)
+    for (int c = 0; c < 5; c++)
+      center[c] += points[i * 5 + c];
+  center /= pixels.size();
+    
+  MatrixXd A(5, pixels.size());
+  for (int i = 0; i < pixels.size(); i++)
+    for (int c = 0; c < 5; c++)
+      A(c, i) = points[i * 5 + c] - center[c];
+    
+  // MatrixXd AA = A * A.transpose();
+  // Vector3d normal_test = AA.
+  Eigen::JacobiSVD<MatrixXd> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
+  //    MatrixXf S = svd.singularValues();
+  //    cout << S << endl;
+  MatrixXd U = svd.matrixU();
+  //    cout << U << endl;
+  Vector3d normal = U.col(4);
+  vector<double> plane(6);
+  for (int c = 0; c < 5; c++)
+    plane[c] = normal[c];
+  plane[5] = normal.dot(center);
+  return plane;
+}
+
+void ProposalDesigner::testColorModels()
+{
+  // vector<double> plane_8 = fitColorPlane(image_, current_solution_segments_[8].getMask());
+  // vector<double> plane_11 = fitColorPlane(image_, current_solution_segments_[11].getMask());
+
+  // Vec3b color = image_.at<Vec3b>(80, 115);
+  // vector<double> point(5);
+  // point[0] = 115;
+  // point[1] = 80;
+  // for (int c = 0; c < 3; c++)
+  //   point[c + 2] = color[c];
+  // {
+  //   vector<double> plane = fitColorPlane(image_, current_solution_segments_[5].getMask());   
+  //   double distance = plane[5];
+  //   for (int c = 0; c < 5; c++)
+  //     distance -= plane[c] * point[c];
+  //   cout << distance << endl;
+  // }
+  // {
+  //   vector<double> plane = fitColorPlane(image_, current_solution_segments_[8].getMask());   
+  //   double distance = plane[5];
+  //   for (int c = 0; c < 5; c++)
+  //     distance -= plane[c] * point[c];
+  //   cout << distance << endl;
+  // }
+  // {
+  //   vector<double> plane = fitColorPlane(image_, current_solution_segments_[11].getMask());   
+  //   double distance = plane[5];
+  //   for (int c = 0; c < 5; c++)
+  //     distance -= plane[c] * point[c];
+  //   cout << distance << endl;
+  // }
+
+  if (true) {
+    Mat color_likelihood_image = Mat::zeros(IMAGE_HEIGHT_, IMAGE_WIDTH_, CV_8UC1);
+    for (int pixel = 0; pixel < IMAGE_WIDTH_ * IMAGE_HEIGHT_; pixel++) {
+      int x = pixel % IMAGE_WIDTH_;
+      int y = pixel / IMAGE_WIDTH_;
+      Vec3b color = image_Lab_.at<Vec3b>(y, x);
+      double cost = current_solution_segments_[9].calcColorFittingCost(color);
+      color_likelihood_image.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = (1 - cost) * 255;
+    }
+    imwrite("Test/color_likelihood_image_mean.bmp", color_likelihood_image);    
+  }
+
+  if (false) {
+    vector<double> plane = fitColorPlane(image_, current_solution_segments_[8].getMask());
+    Mat color_likelihood_image = Mat::zeros(IMAGE_HEIGHT_, IMAGE_WIDTH_, CV_8UC1);
+    for (int pixel = 0; pixel < IMAGE_WIDTH_ * IMAGE_HEIGHT_; pixel++) {
+      int x = pixel % IMAGE_WIDTH_;
+      int y = pixel / IMAGE_WIDTH_;
+      Vec3b color = image_.at<Vec3b>(y, x);
+      vector<double> point(5);
+      point[0] = x;
+      point[1] = y;
+      for (int c = 0; c < 3; c++)
+	point[c + 2] = color[c];
+      double distance = plane[5];
+      for (int c = 0; c < 5; c++)
+	distance -= plane[c] * point[c];
+    
+      color_likelihood_image.at<uchar>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = min(exp(-abs(distance) / 10), 1.0) * 255;
+    }
+    imwrite("Test/color_likelihood_image_plane.bmp", color_likelihood_image);
+  }
+  exit(1);
 }

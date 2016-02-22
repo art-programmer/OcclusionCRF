@@ -14,7 +14,7 @@ using namespace cv::ml;
 using namespace Eigen;
 using namespace cv_utils;
 
-Segment::Segment(const cv::Mat &image, const std::vector<double> &point_cloud, const vector<double> &normals, const vector<double> &camera_parameters, const ImageMask &fitting_mask, const DataStatistics &STATISTICS, const std::vector<double> &pixel_weights, const int segment_type, const bool use_panorama) : IMAGE_WIDTH_(image.cols), IMAGE_HEIGHT_(image.rows), NUM_PIXELS_(image.cols * image.rows), CAMERA_PARAMETERS_(camera_parameters), STATISTICS_(STATISTICS), USE_PANORAMA_(use_panorama)
+Segment::Segment(const cv::Mat &image, const std::vector<double> &point_cloud, const vector<double> &normals, const vector<double> &camera_parameters, const ImageMask &fitting_mask, const DataStatistics &STATISTICS, const std::vector<double> &pixel_weights, const int segment_type, const bool use_panorama) : IMAGE_WIDTH_(image.cols), IMAGE_HEIGHT_(image.rows), NUM_PIXELS_(image.cols * image.rows), CAMERA_PARAMETERS_(camera_parameters), STATISTICS_(STATISTICS), USE_PANORAMA_(use_panorama), behind_room_structure_(false)
 {
   //ImageMask invalid_point_mask = getInvalidPointMask(point_cloud, IMAGE_WIDTH_, IMAGE_HEIGHT_);
   //ImageMask valid_fitting_mask = fitting_mask - invalid_point_mask;
@@ -25,17 +25,19 @@ Segment::Segment(const cv::Mat &image, const std::vector<double> &point_cloud, c
     fitSegmentBSplineSurface(image, point_cloud, normals, fitting_mask - getInvalidPointMask(point_cloud, IMAGE_WIDTH_, IMAGE_HEIGHT_), pixel_weights.size() > 0 ? pixel_weights : vector<double>(NUM_PIXELS_, 1));
   }
   if (validity_ == false)
-    return;
+    return;  
   
-  calcPointCloud(point_cloud);
-  calcSegmentGrowthMap();
-  
-  trainGMM(image, segment_mask_.getPixels());
+  //  trainGMM(image, segment_mask_.getPixels());
   fitting_mask_ = segment_mask_ - (segment_mask_ - fitting_mask);
+  trainColorModel(image, fitting_mask_.getPixels());
+  calcPointCloud(point_cloud);
+  calcConfidence(point_cloud);
+  calcSegmentGrowthMap();
+
   //  calcHistograms(image, point_cloud, normals);
 }
 
-Segment::Segment(const int image_width, const int image_height, const vector<double> &camera_parameters, const DataStatistics &STATISTICS, const bool use_panorama) : IMAGE_WIDTH_(image_width), IMAGE_HEIGHT_(image_height), NUM_PIXELS_(image_width * image_height), CAMERA_PARAMETERS_(camera_parameters), STATISTICS_(STATISTICS), validity_(true), USE_PANORAMA_(use_panorama)
+Segment::Segment(const int image_width, const int image_height, const vector<double> &camera_parameters, const DataStatistics &STATISTICS, const bool use_panorama) : IMAGE_WIDTH_(image_width), IMAGE_HEIGHT_(image_height), NUM_PIXELS_(image_width * image_height), CAMERA_PARAMETERS_(camera_parameters), STATISTICS_(STATISTICS), validity_(true), USE_PANORAMA_(use_panorama), behind_room_structure_(false)
 {
 }
 
@@ -65,7 +67,7 @@ void Segment::fitSegmentPlane(const cv::Mat &image, const std::vector<double> &p
     vector<int> initial_pixels;
     while (initial_pixels.size() < 3) {
       int initial_pixel = fitting_pixels[rand() % fitting_pixels.size()];
-      vector<int> neighbor_pixels = fitting_mask.calcWindowPixels(initial_pixel, 3, USE_PANORAMA_);
+      vector<int> neighbor_pixels = fitting_mask.findMaskWindowPixels(initial_pixel, 3, USE_PANORAMA_);
       if (neighbor_pixels.size() < 2)
 	continue;
       initial_pixels.push_back(initial_pixel);
@@ -164,9 +166,10 @@ void Segment::fitSegmentPlane(const cv::Mat &image, const std::vector<double> &p
   }
   
   ImageMask fitted_pixel_mask(fitted_pixels, IMAGE_WIDTH_, IMAGE_HEIGHT_);
-  ImageMask possible_segment_pixel_mask = fitting_mask;
+  ImageMask possible_segment_pixel_mask = fitted_pixel_mask;
   possible_segment_pixel_mask.dilate();
   possible_segment_pixel_mask.dilate();
+  
   // for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
   //   vector<double> point(point_cloud.begin() + pixel * 3, point_cloud.begin() + (pixel + 1) * 3);
   //   double point_plane_distance = calcPointPlaneDistance(point, plane_);
@@ -268,7 +271,7 @@ void Segment::fitSegmentBSplineSurface(const cv::Mat &image, const std::vector<d
   }
   
   b_spline_surface_ = BSplineSurface(IMAGE_WIDTH_, IMAGE_HEIGHT_, 10, 10, segment_type_);
-  b_spline_surface_.fitBSplineSurface(point_cloud, fitting_pixels);
+  b_spline_surface_.fitBSplineSurface(point_cloud, connected_components[selected_component_index]);
   
   validity_ = true;
 }
@@ -301,6 +304,31 @@ void Segment::calcHistograms(const Mat &image, const vector<double> &point_cloud
   point_plane_angle_histogram_.reset(new Histogram<double>(STATISTICS_.num_grams, -STATISTICS_.pixel_fitting_angle_threshold, STATISTICS_.pixel_fitting_angle_threshold, point_plane_angle_values));
   pixel_center_distance_histogram_.reset(new Histogram<double>(STATISTICS_.num_grams, 0, getMax(pixel_center_distance_values), pixel_center_distance_values));
   color_likelihood_histogram_.reset(new Histogram<double>(STATISTICS_.num_grams, getMin(color_likelihood_values), max_color_likelihood_, color_likelihood_values));
+}
+
+void Segment::trainColorModel(const Mat &image, const vector<int> &pixels)
+{
+  vector<double> color_sums(3, 0);
+  for (vector<int>::const_iterator pixel_it = pixels.begin(); pixel_it != pixels.end(); pixel_it++) {
+    int pixel = *pixel_it;
+    int x = pixel % IMAGE_WIDTH_;
+    int y = pixel / IMAGE_WIDTH_;
+    Vec3b color = image.at<Vec3b>(y, x);
+    for (int c = 0; c < 3; c++)
+      color_sums[c] += color[c];
+  }
+  color_model_.assign(3, 0);
+  for (int c = 0; c < 3; c++)
+    color_model_[c] = color_sums[c] / pixels.size();
+}
+
+double Segment::calcColorFittingCost(const Vec3b color) const
+{
+  double distance = 0;
+  for (int c = 0; c < 3; c++)
+    distance += pow(color[c] - color_model_[c], 2);
+  distance = sqrt(distance);
+  return 1 - exp(-pow(distance, 2) / (2 * STATISTICS_.color_diff_var));
 }
 
 void Segment::trainGMM(const Mat &image, const vector<int> &pixels)
@@ -374,6 +402,17 @@ void Segment::calcPointCloud(const vector<double> &point_cloud)
   }
 }
 
+void Segment::calcConfidence(const vector<double> &point_cloud)
+{
+  vector<int> segment_pixels = fitting_mask_.getPixels();
+  double fitting_error_sum2 = 0;
+  for (vector<int>::const_iterator pixel_it = segment_pixels.begin(); pixel_it != segment_pixels.end(); pixel_it++)
+    fitting_error_sum2 += pow(calcDistance(getPoint(point_cloud, *pixel_it), getPoint(segment_point_cloud_, *pixel_it)), 2);
+  double fitting_error = sqrt(fitting_error_sum2 / segment_pixels.size());
+  //cout << fitting_error << endl;
+  segment_confidence_ = exp(-pow(fitting_error, 2) / (2 * pow(STATISTICS_.pixel_fitting_distance_threshold, 2)));
+}
+
 // vector<double> Segment::getDepthMap() const
 // {
 //   return depth_map_;
@@ -420,15 +459,13 @@ vector<double> Segment::getPlane() const
 
 ImageMask Segment::getMask() const
 {
-  return segment_mask_;
+  return fitting_mask_;
 }
 
-// double Segment::getConfidence() const
-// {
-//   return 1;
-//   return segment_confidence_;
-// }
-
+double Segment::getConfidence() const
+{
+  return segment_confidence_;
+}
 
 void Segment::writeSegmentImage(const string filename)
 {
@@ -483,12 +520,17 @@ ostream & operator <<(ostream &out_str, const Segment &segment)
   // out_str << endl;
   
   out_str << segment.segment_type_ << endl;
+  out_str << static_cast<int>(segment.behind_room_structure_) << endl;
+  out_str << segment.segment_confidence_ << endl;
   if (segment.segment_type_ == 0) {
     for (int c = 0; c < 4; c++)
       out_str << segment.plane_[c] << '\t';
     out_str << endl;
   } else
     out_str << segment.b_spline_surface_ << endl;
+  for (int c = 0; c < 3; c++)
+    out_str << segment.color_model_[c] << '\t';
+  out_str << endl;
   out_str << segment.segment_mask_ << endl;
   out_str << segment.fitting_mask_ << endl;
   out_str << segment.max_color_likelihood_ << endl;
@@ -514,17 +556,26 @@ istream & operator >>(istream &in_str, Segment &segment)
   //   in_str >> segment.disp_plane_[c];
   
   in_str >> segment.segment_type_;
+  //cout << segment.segment_type_ << endl;
+  int behind_room_structure_value;
+  in_str >> behind_room_structure_value;
+  segment.behind_room_structure_ = behind_room_structure_value > 0;
+  in_str >> segment.segment_confidence_;
   if (segment.segment_type_ == 0) {
     segment.plane_.assign(4, 0);
     for (int c = 0; c < 4; c++)
       in_str >> segment.plane_[c];
   } else
     in_str >> segment.b_spline_surface_;
+  segment.color_model_.assign(3, 0);
+  for (int c = 0; c < 3; c++)
+    in_str >> segment.color_model_[c];
   in_str >> segment.segment_mask_;
   in_str >> segment.fitting_mask_;
   in_str >> segment.max_color_likelihood_;
   segment.calcPointCloud();
   segment.calcSegmentGrowthMap();
+  //cout << "done" << endl;
   return in_str;
 }
 
@@ -572,7 +623,7 @@ bool Segment::checkPixelFitting(const Mat &image, const vector<double> &point_cl
   if (checkPointValidity(point)) {
     if (segment_type_ == 0) {
       double distance = abs(calcPointPlaneDistance(point, plane_));
-      //      if (pixel == 28630)
+      //if (pixel == 28885)
       //cout << distance << endl;
       if (distance > STATISTICS_.pixel_fitting_distance_threshold)
 	return false;
@@ -615,26 +666,41 @@ double Segment::calcPixelFittingCost(const Mat &image, const vector<double> &poi
   bool is_behind_room_structure = false;
   if (checkPointValidity(point)) {
     if (segment_type_ == 0) {
-      double distance = abs(calcPointPlaneDistance(point, plane_));
+      double distance = calcPointPlaneDistance(point, plane_);
       //pixel_fitting_cost += min(point_plane_distance / (2 * STATISTICS_.pixel_fitting_distance_threshold), 1.0) * PENALTIES.point_plane_distance_weight;
-      pixel_fitting_cost += (1 - exp(-pow(distance, 2) / (2 * STATISTICS_.depth_diff_var))) * PENALTIES.point_plane_distance_weight * weight_3D;
-      double input_depth = calcNorm(point);
-      double segment_depth = getDepth(pixel);
-      //if (segment_depth < input_depth - STATISTICS_.depth_conflict_threshold && behind_room_structure_tolerance == false)
-      	//pixel_fitting_cost = PENALTIES.point_plane_distance_weight * weight_3D;
+      //double input_depth = calcNorm(point);
+      //double segment_depth = getDepth(pixel);
+      double cost_ratio = (behind_room_structure_tolerance) ? PENALTIES.behind_room_structure_cost_ratio : 1;
+      //if (behind_room_structure_tolerance && distance > 0)
+      //distance = max(distance - STATISTICS_.background_depth_diff_tolerance, 0.0);
+      //pixel_fitting_cost += max(cost_ratio - exp(-pow(distance * cost_ratio, 2) / (2 * STATISTICS_.depth_diff_var)), 0.0) * PENALTIES.point_plane_distance_weight * weight_3D;
+      //double max_cost = 0.5 * pow(PENALTIES.max_depth_diff, 2);
+      //pixel_fitting_cost += min(0.5 * pow(abs(distance), 2) * cost_ratio, max_cost) / max_cost * PENALTIES.point_plane_distance_weight * weight_3D;
+      double max_cost = PENALTIES.max_depth_diff;
+      pixel_fitting_cost += min(abs(distance) * cost_ratio, max_cost) / max_cost * PENALTIES.point_plane_distance_weight * weight_3D;
       sum_pixel_fitting_weights += PENALTIES.point_plane_distance_weight * weight_3D;
       
-      // if (pixel == 4642)
-      //   cout << distance << '\t' << pixel_fitting_cost / sum_pixel_fitting_weights << endl;
+      pixel_fitting_cost += PENALTIES.point_plane_distance_weight * (1 - weight_3D);
+      sum_pixel_fitting_weights += PENALTIES.point_plane_distance_weight * (1 - weight_3D);
+      
+      //if (segment_depth < input_depth - STATISTICS_.depth_conflict_threshold && behind_room_structure_tolerance == false)
+      	//pixel_fitting_cost = PENALTIES.point_plane_distance_weight * weight_3D;
+      
+      
+      // if (pixel == 17127)
+      //  	cout << calcPointPlaneDistance(point, plane_) << '\t' << pixel_fitting_cost / sum_pixel_fitting_weights << endl;
       
       double angle = calcAngle(vector<double>(plane_.begin(), plane_.begin() + 3), normal);
-      pixel_fitting_cost += min(angle / (STATISTICS_.pixel_fitting_angle_threshold), 1.0) * PENALTIES.point_plane_angle_weight * weight_3D;
+      pixel_fitting_cost += min(angle / (PENALTIES.max_angle_diff), 1.0) * PENALTIES.point_plane_angle_weight * weight_3D;
       sum_pixel_fitting_weights += PENALTIES.point_plane_angle_weight * weight_3D;
+
+      pixel_fitting_cost += PENALTIES.point_plane_angle_weight * (1 - weight_3D);
+      sum_pixel_fitting_weights += PENALTIES.point_plane_angle_weight * (1 - weight_3D);
+
+      // if (pixel == 13828)
+      // 	cout << angle << '\t' << pixel_fitting_cost << '\t' << sum_pixel_fitting_weights << endl;
       
-      // if (pixel == 4642)
-      //   cout << angle << '\t' << pixel_fitting_cost / sum_pixel_fitting_weights << endl;
-      
-      is_behind_room_structure = behind_room_structure_tolerance && (segment_depth < input_depth);
+      //is_behind_room_structure = behind_room_structure_tolerance && (segment_depth < input_depth);
     } else {
       vector<double> segment_point = getPoint(segment_point_cloud_, pixel);
       vector<double> segment_normal = getPoint(segment_normals_, pixel);
@@ -643,31 +709,41 @@ double Segment::calcPixelFittingCost(const Mat &image, const vector<double> &poi
 	distance += (segment_point[c] - point[c]) * segment_normal[c];
       distance = abs(distance);
       pixel_fitting_cost += (1 - exp(-pow(distance, 2) / (2 * STATISTICS_.depth_diff_var))) * PENALTIES.point_plane_distance_weight * weight_3D;
-      double input_depth = calcNorm(point);
-      double segment_depth = getDepth(pixel);
+      sum_pixel_fitting_weights += PENALTIES.point_plane_distance_weight * weight_3D;
+
+      pixel_fitting_cost += PENALTIES.point_plane_distance_weight * (1 - weight_3D);
+      sum_pixel_fitting_weights += PENALTIES.point_plane_distance_weight * (1 - weight_3D);
+
+      //      double input_depth = calcNorm(point);
+      //double segment_depth = getDepth(pixel);
       //if (segment_depth < input_depth - STATISTICS_.depth_conflict_threshold && behind_room_structure_tolerance == false)
        	//pixel_fitting_cost = PENALTIES.point_plane_distance_weight * weight_3D;
-      sum_pixel_fitting_weights += PENALTIES.point_plane_distance_weight * weight_3D;
-      
+
+
       // if (pixel == 23314) {
       // 	cout << distance << '\t' << segment_depth << '\t' << input_depth << '\t' << weight_3D << endl;
       //   cout << pixel_fitting_cost << '\t' << sum_pixel_fitting_weights << endl;
       // }
       
       double angle = calcAngle(segment_normal, normal);
-      pixel_fitting_cost += min(angle / (STATISTICS_.pixel_fitting_angle_threshold), 1.0) * PENALTIES.point_plane_angle_weight * weight_3D;
+      pixel_fitting_cost += min(angle / (PENALTIES.max_angle_diff), 1.0) * PENALTIES.point_plane_angle_weight * weight_3D;
       sum_pixel_fitting_weights += PENALTIES.point_plane_angle_weight * weight_3D;
+
+      pixel_fitting_cost += PENALTIES.point_plane_angle_weight * (1 - weight_3D);
+      sum_pixel_fitting_weights += PENALTIES.point_plane_angle_weight * (1 - weight_3D);
+
       
       // if (pixel == 23314)
       //   cout << pixel_fitting_cost << '\t' << sum_pixel_fitting_weights << endl;
       
       pixel_fitting_cost += PENALTIES.non_plane_weight * weight_3D;
       sum_pixel_fitting_weights += PENALTIES.non_plane_weight * weight_3D;
+
       
       // if (pixel == 23314)
       //   cout << pixel_fitting_cost << '\t' << sum_pixel_fitting_weights << endl;
       
-      is_behind_room_structure = behind_room_structure_tolerance && (segment_depth < input_depth);
+      //is_behind_room_structure = behind_room_structure_tolerance && (segment_depth < input_depth);
     }
   } else {
     pixel_fitting_cost += PENALTIES.point_plane_distance_weight;
@@ -681,15 +757,35 @@ double Segment::calcPixelFittingCost(const Mat &image, const vector<double> &poi
   }
   
   
-  double color_likelihood = predictColorLikelihood(image.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_));
-  pixel_fitting_cost += min((max_color_likelihood_ - color_likelihood) / STATISTICS_.pixel_fitting_color_likelihood_threshold, 1.0) * PENALTIES.color_likelihood_weight;
+  //double color_likelihood = predictColorLikelihood(image.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_));
+
+  Vec3b color = image.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_);
+  double color_diff = 0;
+  for (int c = 0; c < 3; c++)
+    color_diff += pow(color[c] - color_model_[c], 2);
+  color_diff = sqrt(color_diff);
+  //double color_fitting_cost = 1 - exp(-pow(color_diff, 2) / (2 * STATISTICS_.color_diff_var));
+  double color_fitting_cost = min(color_diff / PENALTIES.max_color_diff, 1.0);
+  
+  pixel_fitting_cost += color_fitting_cost * PENALTIES.color_likelihood_weight;
   sum_pixel_fitting_weights += PENALTIES.color_likelihood_weight;
+
+  if (sum_pixel_fitting_weights == 0)
+    return 0;
   
-  // if (pixel == 4642)
-  //   cout << color_likelihood << '\t' << pixel_fitting_cost / sum_pixel_fitting_weights << endl;
-  
-  //if (pixel == 25922)
-  //cout << pixel_fitting_cost << '\t' << sum_pixel_fitting_weights << endl;
+  // if (pixel == 27449)
+  //   cout << checkPointValidity(point) << '\t' << color_fitting_cost << '\t' << pixel_fitting_cost << '\t' << sum_pixel_fitting_weights << PENALTIES.color_likelihood_weight << endl;
+
+  // if (pixel == 13828) {
+  //   cout << image.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) << endl;
+  //   for (int c = 0; c < 3; c++)
+  //     cout << color_model_[c] << '\t';
+  //   cout << STATISTICS_.color_diff_var << endl;
+  //   cout << endl;
+  // }
+
+  // if (pixel == 13828)
+  //   cout << color_fitting_cost << '\t' << pixel_fitting_cost << '\t' << sum_pixel_fitting_weights << endl;
   
   //double cost_ratio = is_behind_room_structure ? PENALTIES.behind_room_structure_cost_ratio : 1;
   double cost_ratio = 1;
@@ -767,10 +863,14 @@ vector<int> Segment::projectToOtherViewpoints(const int pixel, const double view
   return projected_pixels;
 }
 
-Matrix3d Segment::getUnwarpTransform(const std::vector<double> &CAMERA_PARAMETERS) const
+Matrix3d Segment::getUnwarpTransform(const std::vector<double> &point_cloud, const std::vector<double> &CAMERA_PARAMETERS) const
 {
+  if (segment_type_ != 0) {
+    return Matrix3d::Identity();
+  }
   Vector3d normal;
   normal << plane_[0], plane_[1], plane_[2];
+  
   Vector3d vertical_vec;
   vertical_vec << 0, 1, 0;
   Vector3d warped_horizontal_vec = normal.cross(vertical_vec);
@@ -801,7 +901,7 @@ Matrix3d Segment::getUnwarpTransform(const std::vector<double> &CAMERA_PARAMETER
   //cout << unwarp_translation_mat << endl;
   
   Matrix3d unwarp_transform = K_mat * unwarp_rotation_mat * K_mat.inverse();
-  
+
   ofstream out_str("Test/unwarp_transform.txt");
   out_str << unwarp_transform;
   return unwarp_transform;
@@ -871,30 +971,46 @@ vector<double> Segment::getSegmentPoint(const int pixel) const
   return getPoint(segment_point_cloud_, pixel);
 }
 
-void Segment::refit(const cv::Mat &image, const std::vector<double> &point_cloud, const vector<double> &normals, const vector<double> &camera_parameters, const ImageMask &fitting_mask, const ImageMask &occluded_mask, const int segment_type)
+void Segment::refit(const cv::Mat &image, const std::vector<double> &point_cloud, const vector<double> &normals, const vector<double> &camera_parameters, const ImageMask &fitting_mask, const ImageMask &occluded_mask, const std::vector<double> &pixel_weights, const int segment_type)
 {
   segment_type_ = segment_type;
   validity_ = true;
   
   vector<int> fitting_pixels = (fitting_mask - getInvalidPointMask(point_cloud, IMAGE_WIDTH_, IMAGE_HEIGHT_)).getPixels();
   if (segment_type == 0) {
-    vector<double> points = getPoints(point_cloud, fitting_pixels);
-    plane_ = fitPlane(points);
-    if (plane_[3] > 0)
-      for (int c = 0; c < 4; c++)
-	plane_[c] = -plane_[c];
+    fitSegmentPlane(image, point_cloud, normals, fitting_mask - getInvalidPointMask(point_cloud, IMAGE_WIDTH_, IMAGE_HEIGHT_), pixel_weights);
+    segment_mask_ += occluded_mask;
+    // vector<double> points = getPoints(point_cloud, fitting_pixels);
+    // plane_ = fitPlane(points);
+    // if (plane_[3] > 0)
+    //   for (int c = 0; c < 4; c++)
+    // 	plane_[c] = -plane_[c];
   } else {
     b_spline_surface_ = BSplineSurface(IMAGE_WIDTH_, IMAGE_HEIGHT_, IMAGE_WIDTH_ / 20, IMAGE_WIDTH_ / 20, segment_type_);
     b_spline_surface_.fitBSplineSurface(point_cloud, fitting_pixels);
+    segment_mask_ = fitting_mask + occluded_mask;
   }
   
   calcPointCloud(point_cloud);
-  segment_mask_ = fitting_mask + occluded_mask;
+  //  segment_mask_ = fitting_mask + occluded_mask;
   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++)
     if (segment_mask_.at(pixel) == true && getDepth(pixel) <= 0)
       segment_mask_.set(pixel, false);
-  calcSegmentGrowthMap();
-  trainGMM(image, segment_mask_.getPixels());
+  //trainGMM(image, segment_mask_.getPixels());
   fitting_mask_ = segment_mask_ - (segment_mask_ - fitting_mask);
+  trainColorModel(image, fitting_mask_.getPixels());
+  calcConfidence(point_cloud);
+  calcSegmentGrowthMap();
+  
   //  calcHistograms(image, point_cloud, normals);
 }
+
+//void Segment::setBehindRoomStructure(const bool behind_room_structure)
+//{
+//  behind_room_structure_ = behind_room_structure;
+//}
+
+//bool Segment::getBehindRoomStructure() const
+//{
+//return behind_room_structure_;
+//}

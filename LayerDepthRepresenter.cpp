@@ -15,6 +15,7 @@
 //#include "BSpline.h"
 //#include "LayerEstimator.h"
 #include "ProposalDesigner.h"
+#include "ProposalGenerator.h"
 #include "ImageMask.h"
 
 //#include "BinaryProposalDesigner.h"
@@ -130,7 +131,7 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
   vector<double> pixel_weights_3D(NUM_PIXELS_, 1);
   vector<double> curvatures = cv_utils::calcCurvatures(point_cloud_, IMAGE_WIDTH_, IMAGE_HEIGHT_);
   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
-    pixel_weights_3D[pixel] = max(1 - curvatures[pixel] * 3, 0.0);
+    pixel_weights_3D[pixel] = max(1 - curvatures[pixel] * STATISTICS_.pixel_weight_curvature_ratio, STATISTICS_.min_pixel_weight);
     if (cv_utils::checkPointValidity(cv_utils::getPoint(point_cloud_, pixel)) == false)
       pixel_weights_3D[pixel] = 0;
   }
@@ -177,26 +178,27 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
     }
   }
   
+  
   //STATISTICS_ = calcInputStatistics(previous_energy_iteration == -1);
   
   
   unique_ptr<ProposalDesigner> proposal_designer(new ProposalDesigner(image_, point_cloud_, normals_, pixel_weights_3D, camera_parameters_, num_layers_, PENALTIES_, STATISTICS_, SCENE_INDEX_, USE_PANORAMA_));
+  //unique_ptr<ProposalGenerator> proposal_designer(new ProposalGenerator(image_, point_cloud_, normals_, pixel_weights_3D, camera_parameters_, num_layers_, PENALTIES_, STATISTICS_, SCENE_INDEX_, USE_PANORAMA_));
   
-  //unique_ptr<BinaryProposalDesigner> proposal_designer(new BinaryProposalDesigner(image_, point_cloud_, normals_, camera_parameters_, num_layers_, PENALTIES_, STATISTICS_, SCENE_INDEX_));
   unique_ptr<TRWSFusion> TRW_solver(new TRWSFusion(image_, point_cloud_, normals_, pixel_weights_3D, PENALTIES_, STATISTICS_));
   //unique_ptr<FusionSpaceLayerIndicator> TRW_solver(new FusionSpaceLayerIndicator(image_, point_cloud_, normals_, PENALTIES_, STATISTICS_));
-  const int NUM_ITERATIONS = 18;
+  const int NUM_ITERATIONS = 12;
   
   //previous_energy_iteration = -1;
   
   // iteration_start_index = previous_energy_iteration + 1;
   //previous_energy_iteration = 19;
-  
+  int solution_num_surfaces = -1;
   if (previous_energy_iteration >= 0) {
-    for (int iteration = 0; iteration <= previous_energy_iteration; iteration++) {
-      vector<int> solution_labels;
-      int solution_num_surfaces;
-      map<int, Segment> solution_segments;
+    //for (int iteration = 0; iteration <= previous_energy_iteration; iteration++) {
+      //vector<int> solution_labels;
+      //int solution_num_surfaces;
+      //map<int, Segment> solution_segments;
       //readLayers(IMAGE_WIDTH_, IMAGE_HEIGHT_, camera_parameters_, PENALTIES_, STATISTICS_, num_layers_, solution_labels, solution_num_surfaces, solution_segments, SCENE_INDEX_, iteration) == true;
       //writeLayers(image_, IMAGE_WIDTH_, IMAGE_HEIGHT_, point_cloud_, camera_parameters_, num_layers_, solution_labels, solution_num_surfaces, solution_segments, SCENE_INDEX_, iteration, ori_image_, ori_point_cloud_);
       
@@ -206,28 +208,31 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
       // writeDispImageFromSegments(solution_labels, solution_num_surfaces, solution_segments, num_layers_, IMAGE_WIDTH_, IMAGE_HEIGHT_, disp_image_filename.str());
       //writeLayers(solution_labels, solution_num_surfaces, solution_segments, iteration);
       //exit(1);
-    }
+    //}
     //exit(1);
     
     vector<int> previous_solution_labels;
     int previous_solution_num_surfaces;
     map<int, Segment> previous_solution_segments;
-    
+
+    cout << previous_energy_iteration << endl;
     bool read_success = readLayers(IMAGE_WIDTH_, IMAGE_HEIGHT_, camera_parameters_, PENALTIES_, STATISTICS_, num_layers_, previous_solution_labels, previous_solution_num_surfaces, previous_solution_segments, SCENE_INDEX_, previous_energy_iteration, USE_PANORAMA_);
     //bool read_success = readLayers(previous_solution_labels, previous_solution_num_surfaces, previous_solution_segments, previous_energy_iteration) == true;
-    
-    
+    cout << "done" << endl;
     assert(read_success);
     stringstream disp_image_filename;
     disp_image_filename << "Test/previous_solution_disp_image.bmp";
     //writeDispImageFromSegments(previous_solution_labels, previous_solution_num_surfaces, previous_solution_segments, num_layers_, IMAGE_WIDTH_, IMAGE_HEIGHT_, disp_image_filename.str());
+    
     writeLayers(image_, point_cloud_, camera_parameters_, num_layers_, previous_solution_labels, previous_solution_num_surfaces, previous_solution_segments, SCENE_INDEX_, 10000);
+    
     //writeLayers(image_, point_cloud_, camera_parameters_, num_layers_, current_solution_labels, proposal_num_surfaces, proposal_segments, SCENE_INDEX_, iteration);
     // exit(1);
+    
     proposal_designer->setCurrentSolution(previous_solution_labels, previous_solution_num_surfaces, previous_solution_segments);
-    cout << "done" << endl;
+
+    solution_num_surfaces = proposal_designer->getNumSurfaces();
   }
-  
   
   // vector<int> test_solution_labels;
   // int test_solution_num_surfaces;
@@ -236,8 +241,10 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
   
   
   int best_solution_iteration = previous_energy_iteration;
+  //cout << iteration_start_index << '\t' << NUM_ITERATIONS << endl;
   for (int iteration = iteration_start_index; iteration < NUM_ITERATIONS + num_single_surface_expansion_proposals; iteration++) {
     cout << "proposal: " << iteration << endl;
+    iteration_start_index = iteration + 1;
     
     // {
     //   vector<int> solution_labels;
@@ -279,7 +286,7 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
     iteration_statistics_map[iteration] = statistics;
     iteration_proposal_type_map[iteration] = proposal_type;
     
-    writeLayers(image_, point_cloud_, camera_parameters_, num_layers_, current_solution_labels, proposal_num_surfaces, proposal_segments, SCENE_INDEX_, iteration);
+    writeLayers(ori_image_, point_cloud_, camera_parameters_, num_layers_, current_solution_labels, proposal_num_surfaces, proposal_segments, SCENE_INDEX_, iteration);
     //exit(1);    
     
     if (energy_info[0] >= previous_energy && previous_energy >= 0) {
@@ -301,6 +308,52 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
     // }
     proposal_designer->setCurrentSolution(current_solution_labels, current_solution_num_surfaces, current_solution_segments);
     
+    
+    ofstream iteration_info_out_str(iteration_info_filename.str());
+    for (map<int, vector<double> >::const_iterator iteration_it = iteration_statistics_map.begin(); iteration_it != iteration_statistics_map.end(); iteration_it++) {
+      iteration_info_out_str << iteration_it->first << '\t' << iteration_proposal_type_map[iteration_it->first] << '\t' << iteration_it->second[0] << '\t' << iteration_it->second[1] << '\t' << iteration_it->second[2] << endl;
+    }
+    iteration_info_out_str.close();
+    
+    best_solution_iteration = iteration;
+
+    solution_num_surfaces = current_solution_num_surfaces;
+  }
+
+  for (int iteration = iteration_start_index; iteration < NUM_ITERATIONS + solution_num_surfaces; iteration++) {
+    cout << "proposal: " << iteration << endl;
+    
+    const clock_t begin_time = clock();
+    vector<vector<int> > proposal_labels;
+    int proposal_num_surfaces;
+    map<int, Segment> proposal_segments;
+    vector<int> proposal_distance_to_boundaries;
+    string proposal_type;
+    if (proposal_designer->getRefinementProposal(iteration, proposal_labels, proposal_num_surfaces, proposal_segments, proposal_type) == false)
+      break;
+    
+    vector<int> previous_solution_indices = proposal_designer->getCurrentSolutionIndices();
+    vector<int> current_solution_labels = TRW_solver->fuse(proposal_labels, proposal_num_surfaces, num_layers_, proposal_segments, previous_solution_indices);
+    
+    vector<double> energy_info = TRW_solver->getEnergyInfo();
+    vector<double> statistics = energy_info;
+    statistics.push_back(static_cast<double>(clock() - begin_time) / CLOCKS_PER_SEC);
+    iteration_statistics_map[iteration] = statistics;
+    iteration_proposal_type_map[iteration] = proposal_type;
+    
+    writeLayers(image_, point_cloud_, camera_parameters_, num_layers_, current_solution_labels, proposal_num_surfaces, proposal_segments, SCENE_INDEX_, iteration);
+      //exit(1);    
+    
+    if (energy_info[0] >= previous_energy && previous_energy >= 0) {
+      cout << "energy increases" << endl;
+      continue;
+    }
+    previous_energy = energy_info[0];
+    
+    int current_solution_num_surfaces = proposal_num_surfaces;
+    map<int, Segment> current_solution_segments = proposal_segments;
+    
+    proposal_designer->setCurrentSolution(current_solution_labels, current_solution_num_surfaces, current_solution_segments); 
     
     ofstream iteration_info_out_str(iteration_info_filename.str());
     for (map<int, vector<double> >::const_iterator iteration_it = iteration_statistics_map.begin(); iteration_it != iteration_statistics_map.end(); iteration_it++) {
@@ -347,18 +400,19 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
   
   generateLayerImageHTML(SCENE_INDEX_, iteration_statistics_map, iteration_proposal_type_map);
 
-  exit(1);  
-
-  vector<int> solution_labels;
-  int solution_num_surfaces;
-  map<int, Segment> solution_segments;
+  //exit(1);
   
-  bool read_success = readLayers(IMAGE_WIDTH_, IMAGE_HEIGHT_, camera_parameters_, PENALTIES_, STATISTICS_, num_layers_, solution_labels, solution_num_surfaces, solution_segments, SCENE_INDEX_, best_solution_iteration, USE_PANORAMA_);
+  vector<int> best_solution_labels;
+  int best_solution_num_surfaces;
+  map<int, Segment> best_solution_segments;
+
+  bool read_success = readLayers(IMAGE_WIDTH_, IMAGE_HEIGHT_, camera_parameters_, PENALTIES_, STATISTICS_, num_layers_, best_solution_labels, best_solution_num_surfaces, best_solution_segments, SCENE_INDEX_, best_solution_iteration, USE_PANORAMA_);
   
   //bool read_success = readLayers(solution_labels, solution_num_surfaces, solution_segments, best_solution_iteration);
   assert(read_success);
   
-  writeLayers(image_, IMAGE_WIDTH_, IMAGE_HEIGHT_, point_cloud_, camera_parameters_, num_layers_, solution_labels, solution_num_surfaces, solution_segments, SCENE_INDEX_, 10000, ori_image_, ori_point_cloud_);
+  writeLayers(image_, IMAGE_WIDTH_, IMAGE_HEIGHT_, point_cloud_, camera_parameters_, num_layers_, best_solution_labels, best_solution_num_surfaces, best_solution_segments, SCENE_INDEX_, 10000, ori_image_, ori_point_cloud_);
+  //  writeLayers(image_, IMAGE_WIDTH_, IMAGE_HEIGHT_, point_cloud_, camera_parameters_, num_layers_, best_solution_labels, best_solution_num_surfaces, best_solution_segments, SCENE_INDEX_, 10000);
   //exit(1);
   
   if (false) {
@@ -376,7 +430,7 @@ void LayerDepthRepresenter::optimizeLayerRepresentation()
   //exit(1);
   //writeDispImageFromSegments(solution_labels, solution_num_surfaces, solution_segments, num_layers_, IMAGE_WIDTH_, IMAGE_HEIGHT_, "Test/final_disp_image.bmp");
   //writeLayers(solution_labels, solution_num_surfaces, solution_segments, 100);
-  writeRenderingInfo(solution_labels, solution_num_surfaces, solution_segments);
+  writeRenderingInfo(best_solution_labels, best_solution_num_surfaces, best_solution_segments);
   //drawLayersMulti(initial_segmentation_, labels, "Results");
   
   return;
@@ -795,19 +849,21 @@ void writeLayers(const Mat &image, const int image_width, const int image_height
     segments_out_str << surface_it->second << endl;
   }
   segments_out_str.close();
-  
-  stringstream segment_GMMs_filename;
-  segment_GMMs_filename << "Cache/scene_" << scene_index << "/segment_GMMs_" << result_index << ".xml";
-  FileStorage segment_GMMs_fs(segment_GMMs_filename.str(), FileStorage::WRITE);
-  for (map<int, Segment>::const_iterator surface_it = solution_segments.begin(); surface_it != solution_segments.end(); surface_it++) {
-    stringstream segment_name;
-    segment_name << "Segment" << surface_it->first;
-    segment_GMMs_fs << segment_name.str() << "{";
-    surface_it->second.getGMM()->write(segment_GMMs_fs);
-    segment_GMMs_fs << "}";
-  }
-  segment_GMMs_fs.release();
-  
+
+  bool use_GMM_models = false;
+  if (use_GMM_models) {
+    stringstream segment_GMMs_filename;
+    segment_GMMs_filename << "Cache/scene_" << scene_index << "/segment_GMMs_" << result_index << ".xml";
+    FileStorage segment_GMMs_fs(segment_GMMs_filename.str(), FileStorage::WRITE);
+    for (map<int, Segment>::const_iterator surface_it = solution_segments.begin(); surface_it != solution_segments.end(); surface_it++) {
+      stringstream segment_name;
+      segment_name << "Segment" << surface_it->first;
+      segment_GMMs_fs << segment_name.str() << "{";
+      surface_it->second.getGMM()->write(segment_GMMs_fs);
+      segment_GMMs_fs << "}";
+    }
+    segment_GMMs_fs.release();
+  }  
   
   //write .ply files
   bool write_ply_files = false;
@@ -1180,15 +1236,30 @@ void writeLayers(const Mat &image, const vector<double> &point_cloud, const vect
 	  blended_color[c] = min(image_color[c] * BLENDING_ALPHA + segment_color[c] * (1 - BLENDING_ALPHA), 255.0);
 	layer_mask_image.at<Vec3b>(y, x) = blended_color;
       }
+
+      vector<int> neighbor_pixels = findNeighbors(pixel, image_width, image_height);
+      bool on_border = false;
+      for (vector<int>::const_iterator neighbor_pixel_it = neighbor_pixels.begin(); neighbor_pixel_it != neighbor_pixels.end(); neighbor_pixel_it++) {
+        if (surface_ids[*neighbor_pixel_it] != surface_id) {
+          on_border = true;
+          break;
+        }
+      }
+      if (on_border)
+        layer_mask_image.at<Vec3b>(y, x) = Vec3b(0, 0, 0);
     }
     for (map<int, int>::const_iterator segment_it = layer_surface_centers[layer_index].begin(); segment_it != layer_surface_centers[layer_index].end(); segment_it++) {
       Point origin(segment_it->second % image_width, segment_it->second / image_width);
-      if (solution_segments.at(segment_it->first).getSegmentType() == 0)
-	putText(layer_mask_image, to_string(segment_it->first), origin, FONT_HERSHEY_PLAIN, 0.6, Scalar(0, 0, 255, 1));
-      else
-	putText(layer_mask_image, to_string(segment_it->first), origin, FONT_HERSHEY_PLAIN, 0.6, Scalar(255, 0, 0, 1));
+      //if (solution_segments.at(segment_it->first).getBehindRoomStructure() == true)
+      //putText(layer_mask_image, to_string(segment_it->first), origin, FONT_HERSHEY_PLAIN, 0.6, Scalar(0, 255, 0, 1));
+      
+      // if (solution_segments.at(segment_it->first).getSegmentType() == 0)
+      // 	putText(layer_mask_image, to_string(segment_it->first), origin, FONT_HERSHEY_PLAIN, 0.6, Scalar(0, 0, 255, 1));
+      // else
+      // 	putText(layer_mask_image, to_string(segment_it->first), origin, FONT_HERSHEY_PLAIN, 0.6, Scalar(255, 0, 0, 1));
     }
     layer_mask_images.push_back(layer_mask_image);
+    imwrite("Test/layer_mask_image_" + to_string(layer_index) + ".bmp", layer_mask_image);
   }
   
   
@@ -1224,7 +1295,22 @@ void writeLayers(const Mat &image, const vector<double> &point_cloud, const vect
       }
     }
     disp_images[layer_index] = disp_image;
+    imwrite("Test/layer_disp_image_" + to_string(layer_index) + ".bmp", disp_image);
   }
+  
+  Mat disp_image(image_height, image_width, CV_8UC3);
+  for (int pixel = 0; pixel < image_width * image_height; pixel++) {
+    int label = solution[pixel];
+    for (int layer_index = 0; layer_index < num_layers; layer_index++) {
+      int surface_id = label / static_cast<int>(pow(solution_num_surfaces + 1, num_layers - 1 - layer_index)) % (solution_num_surfaces + 1);
+      if (surface_id < solution_num_surfaces) {
+	disp_image.at<Vec3b>(pixel / image_width, pixel % image_width) = disp_images[layer_index].at<Vec3b>(pixel / image_width, pixel % image_width);
+	break;
+      }
+    }
+  }
+  imwrite("Test/disp_image.bmp", disp_image);
+  
   
   const int IMAGE_PADDING = 0;
   const int BORDER_WIDTH = 4;
@@ -1272,19 +1358,21 @@ void writeLayers(const Mat &image, const vector<double> &point_cloud, const vect
     segments_out_str << surface_it->second << endl;
   }
   segments_out_str.close();
-  
-  stringstream segment_GMMs_filename;
-  segment_GMMs_filename << "Cache/scene_" << scene_index << "/segment_GMMs_" << result_index << ".xml";
-  FileStorage segment_GMMs_fs(segment_GMMs_filename.str(), FileStorage::WRITE);
-  for (map<int, Segment>::const_iterator surface_it = solution_segments.begin(); surface_it != solution_segments.end(); surface_it++) {
-    stringstream segment_name;
-    segment_name << "Segment" << surface_it->first;
-    segment_GMMs_fs << segment_name.str() << "{";
-    surface_it->second.getGMM()->write(segment_GMMs_fs);
-    segment_GMMs_fs << "}";
+
+  bool use_GMM_models = false;
+  if (use_GMM_models) {
+    stringstream segment_GMMs_filename;
+    segment_GMMs_filename << "Cache/scene_" << scene_index << "/segment_GMMs_" << result_index << ".xml";
+    FileStorage segment_GMMs_fs(segment_GMMs_filename.str(), FileStorage::WRITE);
+    for (map<int, Segment>::const_iterator surface_it = solution_segments.begin(); surface_it != solution_segments.end(); surface_it++) {
+      stringstream segment_name;
+      segment_name << "Segment" << surface_it->first;
+      segment_GMMs_fs << segment_name.str() << "{";
+      surface_it->second.getGMM()->write(segment_GMMs_fs);
+      segment_GMMs_fs << "}";
+    }
+    segment_GMMs_fs.release();
   }
-  segment_GMMs_fs.release();
-  
   
   //write .ply files
   bool write_ply_files = false;
@@ -1555,7 +1643,7 @@ void writeLayers(const Mat &image, const vector<double> &point_cloud, const vect
           if (x < image_width - 1 && y < image_height - 1)
             neighbor_pixels.push_back(pixel + 1 + image_width);
           bool on_boundary = false;
-          for (vector<int>::const_iterator neighbor_pixel_it = neighbor_pixels.begin(); neighbor_pixel_it != neighbor_pixels.end(); neighbor_pixel_it++) {
+	  for (vector<int>::const_iterator neighbor_pixel_it = neighbor_pixels.begin(); neighbor_pixel_it != neighbor_pixels.end(); neighbor_pixel_it++) {
             if (layer_surface_ids[layer_index][*neighbor_pixel_it] != segment_id) {
               on_boundary = true;
               break;
@@ -1640,9 +1728,6 @@ void LayerDepthRepresenter::writeRenderingInfo(const vector<int> &solution_label
   int new_solution_num_surfaces;
   map<int, Segment> new_solution_segments;
   upsampleSolution(solution_labels, solution_num_surfaces, solution_segments, new_solution_labels, new_solution_num_surfaces, new_solution_segments);
-  
-  
-  //cout << "done" << endl;
   
   // vector<int> new_solution_labels = solution_labels;
   // int new_solution_num_surfaces = solution_num_surfaces;
@@ -1906,17 +1991,31 @@ void LayerDepthRepresenter::writeRenderingInfo(const vector<int> &solution_label
     if (imread(completed_image_filename.str()).empty() || true) {
       if (segment_pixels_vec[segment_id].size() == 0)
 	continue;
+      //if (segment_id != 6)
+      //continue;
       cout << "inpaint segment: " << segment_id << endl;
       Mat mask_image = Mat::ones(ori_image_.rows, ori_image_.cols, CV_8UC1) * 255;
       
       vector<bool> source_mask(ori_image_.rows * ori_image_.cols, false);
       vector<bool> target_mask(ori_image_.rows * ori_image_.cols, false);
+      vector<bool> invalid_source_mask(ori_image_.rows * ori_image_.cols, false);
       for (vector<int>::const_iterator pixel_it = segment_pixels_vec[segment_id].begin(); pixel_it != segment_pixels_vec[segment_id].end(); pixel_it++) {
-	source_mask[*pixel_it] = true;
 	target_mask[*pixel_it] = true;
+	if (checkPointValidity(getPoint(ori_point_cloud_, *pixel_it)))
+	  source_mask[*pixel_it] = true;
+	else
+	  invalid_source_mask[*pixel_it] = true;
       }
-      for (vector<int>::const_iterator pixel_it = hole_pixels_vec[segment_id].begin(); pixel_it != hole_pixels_vec[segment_id].end(); pixel_it++)
+      for (vector<int>::const_iterator pixel_it = hole_pixels_vec[segment_id].begin(); pixel_it != hole_pixels_vec[segment_id].end(); pixel_it++) {
 	source_mask[*pixel_it] = false;
+	invalid_source_mask[*pixel_it] = false;
+      }
+
+      imwrite("Test/source_mask.bmp", ImageMask(source_mask, ori_image_.cols, ori_image_.rows).drawImageWithMask(ori_image_, false, Vec3b(0, 0, 0), true));
+      imwrite("Test/target_mask.bmp", ImageMask(target_mask, ori_image_.cols, ori_image_.rows).drawImageWithMask(ori_image_, false, Vec3b(0, 0, 0), true));
+      //imwrite("Test/invalid_source_mask.bmp", ImageMask(invalid_source_mask, ori_image_.cols, ori_image_.rows).drawImageWithMask(ori_image_, false, Vec3b(0, 0, 0), true));
+      //if (segment_id == 3)
+      //exit(1);
       
       // imwrite("Test/image_for_completion.bmp", ori_image_);
       // ofstream source_mask_out_str("Test/source_mask");
@@ -1926,15 +2025,39 @@ void LayerDepthRepresenter::writeRenderingInfo(const vector<int> &solution_label
       // target_mask_out_str << ImageMask(target_mask, ori_image_.cols, ori_image_.rows);
       // target_mask_out_str.close();
       //      exit(1);
+
+      // MatrixXd unwarp_transform = solution_segments.at(segment_id).getUnwarpTransform(ori_point_cloud_, upsampled_camera_parameters);
+      // int min_x = 1000000, max_x = -1000000, min_y = 1000000, max_y = -1000000;
+      // for (int pixel = 0; pixel < ori_image_.cols * ori_image_.rows; pixel++) {
+      //   if (target_mask[pixel] == false)
+      //     continue;
+      //   Vector3d pixel_vec;
+      //   pixel_vec << pixel % ori_image_.cols, pixel / ori_image_.cols, 1;
+      //   Vector3d unwarped_pixel_vec = unwarp_transform * pixel_vec;
+      //   if (unwarped_pixel_vec[2] == 0)
+      //     continue;
+      //   int x = round(unwarped_pixel_vec[0] / unwarped_pixel_vec[2]);
+      //   int y = round(unwarped_pixel_vec[1] / unwarped_pixel_vec[2]);
+      //   if (x < min_x)
+      //     min_x = x;
+      //   if (x > max_x)
+      //     max_x = x;
+      //   if (y < min_y)
+      //     min_y = y;
+      //   if (y > max_y)
+      //     max_y = y;
+      // }
+      // cout << min_x << '\t' << max_x << '\t' << min_y << '\t' << max_y << endl;
+      // exit(1);
       
-      Mat completed_image = completeImage(ori_image_, source_mask, target_mask, 5, solution_segments.at(segment_id).getUnwarpTransform(upsampled_camera_parameters));
+      Mat completed_image = completeImage(ori_image_, source_mask, target_mask, 5, solution_segments.at(segment_id).getUnwarpTransform(ori_point_cloud_, upsampled_camera_parameters));
+      
+      for (int pixel = 0; pixel < ori_image_.cols * ori_image_.rows; pixel++)
+        if (invalid_source_mask[pixel])
+          completed_image.at<Vec3b>(pixel / ori_image_.cols, pixel % ori_image_.cols) = ori_image_.at<Vec3b>(pixel / ori_image_.cols, pixel % ori_image_.cols);
+
       imwrite(completed_image_filename.str(), completed_image);
-      completed_images[segment_id] = completed_image.clone();
-      
-      for (int pixel = 0; pixel < ORI_IMAGE_WIDTH * ORI_IMAGE_HEIGHT; pixel++)
-	if (mask_image.at<uchar>(pixel / ori_image_.cols, pixel % ori_image_.cols) > 200 && mask_image.at<uchar>(pixel / ori_image_.cols, pixel % ori_image_.cols) < 230)
-	  completed_image.at<uchar>(pixel / ori_image_.cols, pixel % ori_image_.cols) = ori_image_.at<uchar>(pixel / ori_image_.cols, pixel % ori_image_.cols);
-      
+      completed_images[segment_id] = completed_image.clone();      
     } else
       completed_images[segment_id] = imread(completed_image_filename.str());
   }
@@ -2215,21 +2338,24 @@ bool readLayers(const int image_width, const int image_height, const vector<doub
   //exit(1);
   if (solution_num_surfaces == 0)
     return false;
-  
-  stringstream segment_GMMs_filename;
-  segment_GMMs_filename << "Cache/scene_" << scene_index << "/segment_GMMs_" << result_index << ".xml";
-  FileStorage segment_GMMs_fs(segment_GMMs_filename.str(), FileStorage::READ);
-  for (map<int, Segment>::iterator surface_it = solution_segments.begin(); surface_it != solution_segments.end(); surface_it++) {
-    stringstream segment_name;
-    segment_name << "Segment" << surface_it->first;
-    FileNode segment_GMM_file_node = segment_GMMs_fs[segment_name.str()];
-    surface_it->second.setGMM(segment_GMM_file_node);
+
+  bool use_GMM_models = false;
+  if (use_GMM_models) {
+    stringstream segment_GMMs_filename;
+    segment_GMMs_filename << "Cache/scene_" << scene_index << "/segment_GMMs_" << result_index << ".xml";
+    FileStorage segment_GMMs_fs(segment_GMMs_filename.str(), FileStorage::READ);
+    for (map<int, Segment>::iterator surface_it = solution_segments.begin(); surface_it != solution_segments.end(); surface_it++) {
+      stringstream segment_name;
+      segment_name << "Segment" << surface_it->first;
+      FileNode segment_GMM_file_node = segment_GMMs_fs[segment_name.str()];
+      surface_it->second.setGMM(segment_GMM_file_node);
+      
+      //cout << surface_it->second.predictColorLikelihood(static_cast<int>(6.5320558718089686e+01 + 0.5) * IMAGE_WIDTH_ + static_cast<int>(3.6378882105214679e+01 + 0.5), Vec3b(2.1218500883957713e+01, 1.8951972423041440e+01, 3.3314066835337023e+01)) << endl;
     
-    //cout << surface_it->second.predictColorLikelihood(static_cast<int>(6.5320558718089686e+01 + 0.5) * IMAGE_WIDTH_ + static_cast<int>(3.6378882105214679e+01 + 0.5), Vec3b(2.1218500883957713e+01, 1.8951972423041440e+01, 3.3314066835337023e+01)) << endl;
-    
-    //exit(1);
+      //exit(1);
+    }
+    segment_GMMs_fs.release();
   }
-  segment_GMMs_fs.release();
   
   solution = vector<int>(NUM_PIXELS, 0);
   for (int layer_index = 0; layer_index < num_layers; layer_index++) {
@@ -2518,6 +2644,7 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
       }
     }
   }
+
   const int UNCONFIDENT_BOUNDARY_WIDTH = 1;
   for (int layer_index = 0; layer_index < num_layers_; layer_index++) {
     vector<bool> confident_pixel_mask = layer_confident_pixel_mask[layer_index];
@@ -2535,8 +2662,8 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
     layer_confident_pixel_mask[layer_index] = confident_pixel_mask;
   }
 
-  Mat blurred_image;
-  GaussianBlur(image_, blurred_image, cv::Size(3, 3), 0, 0);
+  Mat blurred_image = image_.clone();
+  //GaussianBlur(image_, blurred_image, cv::Size(3, 3), 0, 0);
   for (int layer_index = 0; layer_index < num_layers_; layer_index++) {
     vector<bool> confident_pixel_mask = layer_confident_pixel_mask[layer_index];
     for (int pixel = 0; pixel < NUM_PIXELS_; pixel++)
@@ -2652,7 +2779,7 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
   //exit(1);
   const double DISTANCE_2D_WEIGHT = 0 * IMAGE_WIDTH_ / ORI_IMAGE_WIDTH;
   //cout << calcGeodesicDistance(distance_map, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, 639214, 645220, DISTANCE_2D_WEIGHT) << endl;
-    //  cout << calcGeodesicDistance(distance_map, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, 628585, 627577, DISTANCE_2D_WEIGHT) << endl;
+  //  cout << calcGeodesicDistance(distance_map, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, 628585, 627577, DISTANCE_2D_WEIGHT) << endl;
   //exit(1);
   
   vector<int> solution_labels_high_res(ORI_NUM_PIXELS, 0);
@@ -2677,6 +2804,32 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
     for (vector<int>::const_iterator y_it = ys.begin(); y_it != ys.end(); y_it++)
       for (vector<int>::const_iterator x_it = xs.begin(); x_it != xs.end(); x_it++)
 	vertex_pixels.push_back(*y_it * IMAGE_WIDTH_ + *x_it);
+
+    
+    // if (ori_pixel != 189 * ORI_IMAGE_WIDTH + 394)
+    //   continue;
+
+    if (false) {
+      vector<int> segment_indices;
+      for (vector<int>::const_iterator pixel_it = vertex_pixels.begin(); pixel_it != vertex_pixels.end(); pixel_it++)
+	segment_indices.push_back(solution_labels[*pixel_it] / static_cast<int>(pow(solution_num_surfaces + 1, num_layers_ - 1 - 3)) % (solution_num_surfaces + 1));
+    
+      vector<int> ori_vertex_pixels;
+      for (vector<int>::const_iterator pixel_it = vertex_pixels.begin(); pixel_it != vertex_pixels.end(); pixel_it++) {
+	double ori_vertex_pixel = min(static_cast<int>(round(1.0 * (*pixel_it / IMAGE_WIDTH_) / IMAGE_HEIGHT_ * ORI_IMAGE_HEIGHT)), ORI_IMAGE_HEIGHT - 1) * ORI_IMAGE_WIDTH + min(static_cast<int>(round(1.0 * (*pixel_it % IMAGE_WIDTH_) / IMAGE_WIDTH_ * ORI_IMAGE_WIDTH)), ORI_IMAGE_WIDTH - 1);
+	ori_vertex_pixels.push_back(ori_vertex_pixel);
+      }
+        
+      vector<double> distances = calcGeodesicDistances(distance_map, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, ori_pixel, ori_vertex_pixels, DISTANCE_2D_WEIGHT);
+      double min_distance = 1000000;
+      int min_distance_index = -1;
+      for (vector<double>::const_iterator distance_it = distances.begin(); distance_it != distances.end(); distance_it++) {
+	if (*distance_it < min_distance) {
+	  cout << *distance_it << '\t' << ori_vertex_pixels[distance_it - distances.begin()] % ORI_IMAGE_WIDTH << '\t' << ori_vertex_pixels[distance_it - distances.begin()] / ORI_IMAGE_WIDTH << '\t' << segment_indices[distance_it - distances.begin()] << endl;
+	}
+      }
+      exit(1);
+    }
     
     // bool has_confident_pixels = false;
     // for (vector<int>::const_iterator pixel_it = vertex_pixels.begin(); pixel_it != vertex_pixels.end(); pixel_it++) {
@@ -2711,13 +2864,14 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
       vector<int> segment_indices;
       for (vector<int>::const_iterator pixel_it = vertex_pixels.begin(); pixel_it != vertex_pixels.end(); pixel_it++)
         segment_indices.push_back(solution_labels[*pixel_it] / static_cast<int>(pow(solution_num_surfaces + 1, num_layers_ - 1 - layer_index)) % (solution_num_surfaces + 1));
-      
+
+      set<int> segment_indices_set(segment_indices.begin(), segment_indices.end());
       map<int, map<int, int> > surface_occluding_relations;
       for (vector<int>::const_iterator segment_it_1 = segment_indices.begin(); segment_it_1 != segment_indices.end(); segment_it_1++) {
 	if (*segment_it_1 == solution_num_surfaces)
 	  continue;
 	int vertex_pixel = vertex_pixels[segment_it_1 - segment_indices.begin()];
-        for (vector<int>::const_iterator segment_it_2 = segment_indices.begin(); segment_it_2 != segment_indices.end(); segment_it_2++) {
+        for (set<int>::const_iterator segment_it_2 = segment_indices_set.begin(); segment_it_2 != segment_indices_set.end(); segment_it_2++) {
 	  if (*segment_it_2 == solution_num_surfaces || *segment_it_2 == *segment_it_1)
             continue;
 	  //	  cout << vertex_pixel << '\t' << *segment_it_1 << '\t' << *segment_it_2 << '\t' << solution_segments.at(*segment_it_1).getDepth(vertex_pixel) << '\t' << solution_segments.at(*segment_it_2).getDepth(vertex_pixel) << endl;
@@ -2730,35 +2884,64 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
       
       int selected_segment_index = -1;
       int selected_vertex = -1;
-      for (vector<int>::const_iterator segment_it = segment_indices.begin(); segment_it != segment_indices.end(); segment_it++) {
-        if (selected_segment_index == -1 || selected_segment_index == solution_num_surfaces) {
-	  selected_segment_index = *segment_it;
-	  selected_vertex = segment_it - segment_indices.begin();
-	  //cout << "0 " << selected_segment_index << endl;
-        } else if (*segment_it != solution_num_surfaces && *segment_it != selected_segment_index) {
-	  if (surface_occluding_relations[*segment_it][selected_segment_index] + surface_occluding_relations[selected_segment_index][*segment_it] > 0) {
-            if (solution_segments.at(*segment_it).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) < solution_segments.at(selected_segment_index).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) ||
-                solution_segments.at(selected_segment_index).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) < 0) {
-              selected_segment_index = *segment_it;
-	      selected_vertex = segment_it - segment_indices.begin();
-	      //cout << "1 " << selected_segment_index << endl;
-            }
-          } else if (surface_occluding_relations[*segment_it][selected_segment_index] + surface_occluding_relations[selected_segment_index][*segment_it] < 0) {
-            if (solution_segments.at(*segment_it).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) > solution_segments.at(selected_segment_index).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_)) {
-              selected_segment_index = *segment_it;
-	      selected_vertex = segment_it - segment_indices.begin();
-	      //cout << "2 " << selected_segment_index << endl;
-            }
-          } else {
-            if (sqrt(pow(x - vertex_pixels[segment_it - segment_indices.begin()] % IMAGE_WIDTH_, 2) + pow(y - vertex_pixels[segment_it - segment_indices.begin()] / IMAGE_WIDTH_, 2)) < sqrt(pow(x - vertex_pixels[selected_vertex] % IMAGE_WIDTH_, 2) + pow(y - vertex_pixels[selected_vertex] / IMAGE_WIDTH_, 2))) {
-              selected_segment_index = *segment_it;
-	      selected_vertex = segment_it - segment_indices.begin();
-	      //	      cout << "3 " << selected_segment_index << endl;
-            } 
+      if (true) {
+	for (vector<int>::const_iterator segment_it = segment_indices.begin(); segment_it != segment_indices.end(); segment_it++) {
+	  if (selected_segment_index == -1 || selected_segment_index == solution_num_surfaces) {
+	    selected_segment_index = *segment_it;
+	    selected_vertex = segment_it - segment_indices.begin();
+	    //cout << "0 " << selected_segment_index << endl;
+	  } else if (*segment_it != solution_num_surfaces && *segment_it != selected_segment_index) {
+	    if (surface_occluding_relations[*segment_it][selected_segment_index] + surface_occluding_relations[selected_segment_index][*segment_it] > 0) {
+	      if (solution_segments.at(*segment_it).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) < solution_segments.at(selected_segment_index).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) ||
+		  solution_segments.at(selected_segment_index).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) < 0) {
+		selected_segment_index = *segment_it;
+		selected_vertex = segment_it - segment_indices.begin();
+		//cout << "1 " << selected_segment_index << endl;
+	      }
+	    } else if (surface_occluding_relations[*segment_it][selected_segment_index] + surface_occluding_relations[selected_segment_index][*segment_it] < 0) {
+	      if (solution_segments.at(*segment_it).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_) > solution_segments.at(selected_segment_index).getDepth(x / IMAGE_WIDTH_, y / IMAGE_HEIGHT_)) {
+		selected_segment_index = *segment_it;
+		selected_vertex = segment_it - segment_indices.begin();
+		//cout << "2 " << selected_segment_index << endl;
+	      }
+	    } else {
+	      if (sqrt(pow(x - vertex_pixels[segment_it - segment_indices.begin()] % IMAGE_WIDTH_, 2) + pow(y - vertex_pixels[segment_it - segment_indices.begin()] / IMAGE_WIDTH_, 2)) < sqrt(pow(x - vertex_pixels[selected_vertex] % IMAGE_WIDTH_, 2) + pow(y - vertex_pixels[selected_vertex] / IMAGE_WIDTH_, 2))) {
+		selected_segment_index = *segment_it;
+		selected_vertex = segment_it - segment_indices.begin();
+		//	      cout << "3 " << selected_segment_index << endl;
+	      } 
+	    }
 	  }
 	}
+      } else {
+	vector<int> sorted_segment_indices = segment_indices;
+	if (unique(sorted_segment_indices.begin(), sorted_segment_indices.end()) - sorted_segment_indices.begin() == 1) {
+	  selected_segment_index = *segment_indices.begin();
+	  selected_vertex = 0;
+	} else {
+	  vector<int> ori_vertex_pixels;
+	  for (vector<int>::const_iterator pixel_it = vertex_pixels.begin(); pixel_it != vertex_pixels.end(); pixel_it++) {
+	    double ori_vertex_pixel = min(static_cast<int>(round(1.0 * (*pixel_it / IMAGE_WIDTH_) / IMAGE_HEIGHT_ * ORI_IMAGE_HEIGHT)), ORI_IMAGE_HEIGHT - 1) * ORI_IMAGE_WIDTH + min(static_cast<int>(round(1.0 * (*pixel_it % IMAGE_WIDTH_) / IMAGE_WIDTH_ * ORI_IMAGE_WIDTH)), ORI_IMAGE_WIDTH - 1);
+	    ori_vertex_pixels.push_back(ori_vertex_pixel);
+	  }
+	
+	  vector<double> distances = calcGeodesicDistances(distance_map, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, ori_pixel, ori_vertex_pixels, DISTANCE_2D_WEIGHT);
+	  double min_distance = 1000000;
+	  int min_distance_index = -1;
+	  for (vector<double>::const_iterator distance_it = distances.begin(); distance_it != distances.end(); distance_it++) {
+	    if (*distance_it < min_distance) {
+	      selected_segment_index = segment_indices[distance_it - distances.begin()];
+	      selected_vertex = distance_it - distances.begin();
+	      min_distance = *distance_it;
+	    }
+	  }
+	  // if (layer_index == 3) {
+          //   cout << selected_segment_index << endl;
+          //   exit(1);
+          // }
+        }
       }
-      
+
       bool has_empty_neighbor = false;
       for (vector<int>::const_iterator segment_it = segment_indices.begin(); segment_it != segment_indices.end(); segment_it++) {
 	int vertex_pixel = vertex_pixels[segment_it - segment_indices.begin()];
@@ -2806,7 +2989,7 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
 	    ori_window_pixels.push_back(ori_empty_pixel);
 	  }
 	  vector<double> distances = calcGeodesicDistances(distance_map, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, ori_pixel, ori_window_pixels, DISTANCE_2D_WEIGHT);
-	  double min_distance = 1000000;
+          double min_distance = 1000000;
 	  int min_distance_index = -1;
 	  for (vector<double>::const_iterator distance_it = distances.begin(); distance_it != distances.end(); distance_it++) {
 	    if (*distance_it < min_distance) {
@@ -2875,8 +3058,8 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
   //   solution_labels_high_res[ori_pixel] = solution_label;
   // }
   
-  writeLayers(ori_image_, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, ori_point_cloud_, ori_camera_parameters, num_layers_, solution_labels_high_res, solution_num_surfaces, solution_segments, SCENE_INDEX_, 20000, ori_image_, ori_point_cloud_);
-  
+  //writeLayers(ori_image_, ORI_IMAGE_WIDTH, ORI_IMAGE_HEIGHT, ori_point_cloud_, ori_camera_parameters, num_layers_, solution_labels_high_res, solution_num_surfaces, solution_segments, SCENE_INDEX_, 20000, ori_image_, ori_point_cloud_);
+  writeLayers(ori_image_, ori_point_cloud_, ori_camera_parameters, num_layers_, solution_labels_high_res, solution_num_surfaces, solution_segments, SCENE_INDEX_, 20000);
   upsampled_solution_labels = solution_labels_high_res;
   upsampled_solution_num_surfaces = solution_num_surfaces;
   
@@ -2903,16 +3086,3 @@ void LayerDepthRepresenter::upsampleSolution(const vector<int> &solution_labels,
   //   }
   // }
 }
-
-// vector<ImageMask> LayerDepthRepresenter::calcUpsampledSegmentMasks(const vector<int> &solution_labels, const int solution_num_surfaces)
-// {
-//   vector<vector<bool> > segment_mask_vecs(solution_num_surfaces, vector<bool>(NUM_PIXELS_))
-//   for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
-//     int solution_label = solution_labels[pixel];
-//     for (int layer_index = 0; layer_index < num_layers_; layer_index++) {
-//       int surface_id = solution_label / static_cast<int>(pow(solution_num_surfaces + 1, num_layers_ - 1 - layer_index)) % (solution_num_surfaces + 1);
-//       if (surface_id < solution_num_surfaces) {
-//       }
-//     }
-//   }
-// }

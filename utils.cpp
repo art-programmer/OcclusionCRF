@@ -918,7 +918,7 @@ Mat modifySurfaceIdImage(const Mat &surface_id_image, const int type)
     return modified_surface_id_image;
 }
 
-vector<double> loadPointCloud(const char *filename)
+vector<double> loadPointCloud(const string &filename)
 {
     ifstream in_str(filename);
     int num = -1;
@@ -1058,7 +1058,7 @@ vector<int> loadSegmentation(const char *filename)
     return segmentation;
 }
 
-void savePointCloudAsPly(const vector<double> &point_cloud, const char *filename)
+void savePointCloudAsPly(const Mat &image, const vector<double> &point_cloud, const char *filename)
 {
     ofstream out_str(filename);
     int num_points = point_cloud.size() / 3;
@@ -1068,9 +1068,14 @@ void savePointCloudAsPly(const vector<double> &point_cloud, const char *filename
     out_str << "property float x" << endl;
     out_str << "property float y" << endl;
     out_str << "property float z" << endl;
+    out_str << "property uchar red" << endl;
+    out_str << "property uchar green" << endl;
+    out_str << "property uchar blue" << endl;
     out_str << "end_header" << endl;
-    for (int i = 0; i < num_points; i++)
-        out_str << -point_cloud[i * 3 + 0] << ' ' << -point_cloud[i * 3 + 1] << ' ' << point_cloud[i * 3 + 2] << endl;
+    for (int i = 0; i < num_points; i++) {
+      Vec3b color = image.at<Vec3b>(i / image.cols, i % image.cols);
+      out_str << -point_cloud[i * 3 + 0] << ' ' << -point_cloud[i * 3 + 1] << ' ' << point_cloud[i * 3 + 2] << ' ' << static_cast<int>(color[2]) << ' ' << static_cast<int>(color[1]) << ' ' << static_cast<int>(color[0]) << endl;
+    }
     out_str.close();
 }
 

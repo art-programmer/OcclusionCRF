@@ -22,12 +22,15 @@
 
 using namespace cv;
 
+
 TRWSFusion::TRWSFusion(const Mat &image, const vector<double> &point_cloud, const vector<double> &normals, const std::vector<double> &pixel_weights_3D, const RepresenterPenalties &penalties, const DataStatistics &statistics, const bool consider_surface_cost) : image_(image), point_cloud_(point_cloud), normals_(normals), pixel_weights_3D_(pixel_weights_3D), IMAGE_WIDTH_(image.cols), IMAGE_HEIGHT_(image.rows), NUM_PIXELS_(image.cols * image.rows), penalties_(penalties), statistics_(statistics), consider_surface_cost_(consider_surface_cost)
 {
-  Mat blurred_image;
-  GaussianBlur(image_, blurred_image, cv::Size(3, 3), 0, 0);
-  blurred_hsv_image_ = blurred_image.clone();
-  calcColorDiffVar();
+  cvtColor(image, image_Lab_, CV_BGR2Lab);
+  for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
+    Vec3b color = image_Lab_.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_);
+    color[0] = round(color[0] * 1.0 / 3);
+    image_Lab_.at<Vec3b>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_) = color;
+  }
 }
 
 // TRWSFusion::TRWSFusion(TRWSFusion &solver)
@@ -76,8 +79,8 @@ double TRWSFusion::calcDataCost(const int pixel, const int label)
   
   int unary_cost = 0;
   //pixel fitting cost
-  unary_cost += foremost_non_empty_segment.calcPixelFittingCost(blurred_hsv_image_, point_cloud_, normals_, pixel, penalties_, pixel_weights_3D_[pixel], foremost_non_empty_layer_index == proposal_num_layers_ - 1) * penalties_.data_cost_weight;
-  
+  unary_cost += foremost_non_empty_segment.calcPixelFittingCost(image_Lab_, point_cloud_, normals_, pixel, penalties_, pixel_weights_3D_[pixel], foremost_non_empty_layer_index == proposal_num_layers_ - 1) * penalties_.data_cost_weight;
+
   // //background empty cost
   // {
   //   if (layer_labels[proposal_num_layers_ - 1] == proposal_num_surfaces_)
@@ -132,6 +135,11 @@ double TRWSFusion::calcDataCost(const int pixel, const int label)
   return unary_cost;
 }
 
+double TRWSFusion::calcDepthChangeCost(const double depth_change)
+{
+  return max(pow(min(depth_change / penalties_.max_depth_change, 1.0), 1) * penalties_.smoothness_pen, penalties_.smoothness_small_constant_pen);
+}
+
 double TRWSFusion::calcSmoothnessCost(const int pixel_1, const int pixel_2, const int label_1, const int label_2)
 {
   if (label_1 == label_2)
@@ -160,50 +168,32 @@ double TRWSFusion::calcSmoothnessCost(const int pixel_1, const int pixel_2, cons
       if (surface_id_1 < proposal_num_surfaces_) {
 	surface_1_visible = false;
 	surface_2_visible = false;
-	continue;
       }
+      continue;
     }
     if (surface_id_1 < proposal_num_surfaces_ && surface_id_2 < proposal_num_surfaces_) {
+      
       double depth_1_1 = proposal_segments_.at(surface_id_1).getDepth(pixel_1);
       double depth_1_2 = proposal_segments_.at(surface_id_1).getDepth(pixel_2);
       double depth_2_1 = proposal_segments_.at(surface_id_2).getDepth(pixel_1);
       double depth_2_2 = proposal_segments_.at(surface_id_2).getDepth(pixel_2);
       
+      
       if (depth_1_1 <= 0 || depth_1_2 <= 0 || depth_2_1 <= 0 || depth_2_2 <= 0)
 	return penalties_.large_pen;
       
       double diff_1 = abs(depth_1_1 - depth_2_1);
-      // if (depth_change_1 < penalties_.smoothness_pen_weight)
-      //   depth_change_1 = 0;
       double diff_2 = abs(depth_1_2 - depth_2_2);
-      // if (depth_change_2 < penalties_.smoothness_pen_weight)
-      //   depth_change_2 = 0;
       double diff_middle = (depth_1_1 - depth_2_1) * (depth_1_2 - depth_2_2) <= 0 ? 0 : 1000000;
       double min_diff = min(min(diff_1, diff_2), diff_middle);
-      //double diff_middle = (depth_1_1 - depth_2_1 + depth_1_2 - depth_2_2) / 2;
-      // if (depth_change_middle < penalties_.smoothness_pen_weight)
-      //   depth_change_middle = 0;
       
-      //double boundary_score = (surface_1_visible == true && surface_2_visible == true) ? max_boundary_score : 1;
-      double boundary_score = 1;
-      pairwise_cost += max(min(min_diff / statistics_.depth_change_smoothness_threshold / penalties_.max_depth_change_ratio, 1.0) * penalties_.smoothness_pen, penalties_.smoothness_small_constant_pen);
-      //pairwise_cost += (1 - exp(-pow(min_diff, 2) / (2 * pow(statistics_.depth_change_smoothness_threshold * penalties_.smoothness_cost_depth_change_ratio, 2)))) * penalties_.smoothness_pen + penalties_.smoothness_small_constant_pen;
-      //boundary_score = 1;
-      // double cost_1 = log(2 / (1 + boundary_score * exp(-pow(diff_1, 2) / (2 * pow(statistics_.depth_change_smoothness_threshold * penalties_.smoothness_cost_depth_change_ratio, 2))))) / log(2) * penalties_.smoothness_pen;
-      // double cost_2 = log(2 / (1 + boundary_score * exp(-pow(diff_2, 2) / (2 * pow(statistics_.depth_change_smoothness_threshold * penalties_.smoothness_cost_depth_change_ratio, 2))))) / log(2) * penalties_.smoothness_pen;
-      // double cost_middle = log(2 / (1 + boundary_score * exp(-pow(diff_middle, 2) / (2 * pow(statistics_.depth_change_smoothness_threshold * penalties_.smoothness_cost_depth_change_ratio, 2))))) / log(2) * penalties_.smoothness_pen;
-      
-      //pairwise_cost += log(2 / (1 + boundary_score * exp(-pow(min_diff, 2) / (2 * pow(statistics_.depth_change_smoothness_threshold * penalties_.smoothness_cost_depth_change_ratio, 2))))) / log(2) * penalties_.smoothness_pen + penalties_.smoothness_small_constant_pen;
-      // if (abs(depth_1_1 - depth_2_1) < penalties_.smoothness_depth_change_threshold || abs(depth_1_2 - depth_2_2) < penalties_.smoothness_depth_change_threshold || abs((depth_1_1 - depth_2_1 + depth_1_2 - depth_2_2) / 2) < penalties_.smoothness_depth_change_threshold)
-      // 	cout << min(min(cost_1, cost_2), cost_middle) + penalties_.smoothness_small_constant_pen << '\t' << log(2 / (1 + boundary_score * exp(-0.5))) / log(2) * penalties_.smoothness_pen_weight + penalties_.smoothness_small_constant_pen << '\t' << depth_1_1 << endl;
+      pairwise_cost += calcDepthChangeCost(min_diff);
       
       surface_1_visible = false;
       surface_2_visible = false;
       
-      // if (layer_index == 2 && (surface_id_1 == 6 || surface_id_2 == 6))
-      //   cout << pairwise_cost << endl;
-      
     } else if (surface_id_1 < proposal_num_surfaces_ || surface_id_2 < proposal_num_surfaces_) {
+      
       double boundary_score = 1;
       bool visible = false;
       if (surface_id_1 < proposal_num_surfaces_ && surface_1_visible) {
@@ -217,16 +207,7 @@ double TRWSFusion::calcSmoothnessCost(const int pixel_1, const int pixel_2, cons
 	surface_2_visible = false;
       }
       //if (visible == false)
-      pairwise_cost += penalties_.smoothness_empty_non_empty_ratio * penalties_.smoothness_pen;
-      
-      //pairwise_cost += (1 - boundary_score * exp(-1 / (2 * pow(penalties_.smoothness_cost_depth_change_ratio, 2)))) * penalties_.smoothness_pen + penalties_.smoothness_small_constant_pen;
-      //boundary_score = 1;
-      //pairwise_cost += log(2 / (1 + boundary_score * exp(-pow((penalties_.smoothness_depth_change_threshold), 2) / (2 * statistics_.disp_residual)))) / log(2) * penalties_.smoothness_pen_weight + penalties_.smoothness_small_constant_pen;
-      //pairwise_cost += log(2 / (1 + boundary_score * exp(-1 / (2 * pow(penalties_.smoothness_cost_depth_change_ratio, 2))))) / log(2) * penalties_.smoothness_pen + penalties_.smoothness_small_constant_pen;
-	
-      //cout << statistics_.depth_svar << '\t' << pairwise_cost << endl;
-      //exit(1);
-      //      pairwise_cost += penalties_.smoothness_between_empty_pen;
+      pairwise_cost += calcDepthChangeCost(statistics_.depth_change_smoothness_threshold);
     }
   }
   
@@ -238,18 +219,24 @@ double TRWSFusion::calcSmoothnessCost(const int pixel_1, const int pixel_2, cons
     int surface_id_2 = layer_labels_2[layer_index];
     if (surface_id_1 < proposal_num_surfaces_) {
       if (surface_1_visible == true) {
-        if (surface_id_1 != surface_id_2 && proposal_segments_[surface_id_1].checkPairwiseConvexity(pixel_1, pixel_2) == false)
-  	  pairwise_cost += penalties_.smoothness_concave_shape_pen;
+	if (surface_id_1 != surface_id_2 && proposal_segments_[surface_id_1].checkPairwiseConvexity(pixel_1, pixel_2) == false)
+          pairwise_cost += penalties_.smoothness_concave_shape_pen;
   	surface_1_visible = false;
+
+	// if (surface_id_1 != surface_id_2 && proposal_segments_[surface_id_1].checkPairwiseConvexity(pixel_1, pixel_2) == false)
+	//   cout << surface_id_1 << '\t' << pixel_1 % IMAGE_WIDTH_ << '\t' << pixel_1 / IMAGE_WIDTH_ << endl;
       }
       // if (surface_id_1 == 2)
       // 	cout << "why" << endl;
     }
     if (surface_id_2 < proposal_num_surfaces_) {
       if (surface_1_visible == true) {
-  	if (surface_id_1 != surface_id_2 && proposal_segments_[surface_id_2].checkPairwiseConvexity(pixel_2, pixel_1) == false)
+	if (surface_id_1 != surface_id_2 && proposal_segments_[surface_id_2].checkPairwiseConvexity(pixel_2, pixel_1) == false)
   	  pairwise_cost += penalties_.smoothness_concave_shape_pen;
   	surface_2_visible = false;
+
+	// if (surface_id_1 != surface_id_2 && proposal_segments_[surface_id_2].checkPairwiseConvexity(pixel_2, pixel_1) == false)
+	//   cout << surface_id_2 << '\t' << pixel_2 % IMAGE_WIDTH_ << '\t' << pixel_2 / IMAGE_WIDTH_ << endl;
       }
       // if (surface_id_2 == 2)
       //   cout << "why" << endl;
@@ -283,7 +270,7 @@ double TRWSFusion::calcSmoothnessCost(const int pixel_1, const int pixel_2, cons
   }
   
   if (visible_surface_1 != visible_surface_2) { // && visible_layer_index_1 != visible_layer_index_2) {
-    pairwise_cost += max(exp(-pow(calcColorDiff(pixel_1, pixel_2), 2) / (2 * color_diff_var_)) * penalties_.smoothness_boundary_pen, penalties_.smoothness_min_boundary_pen);
+    pairwise_cost += max(exp(-pow(cv_utils::calcColorDiff(image_Lab_, pixel_1, pixel_2), 2) / (2 * statistics_.color_diff_var)) * penalties_.smoothness_boundary_pen, penalties_.smoothness_min_boundary_pen);
   } else if (visible_layer_index_1 != visible_layer_index_2) {
     pairwise_cost += penalties_.smoothness_segment_splitted_pen;
   }
@@ -341,11 +328,15 @@ vector<int> TRWSFusion::fuse(const vector<vector<int> > &proposal_labels, const 
   
   if (consider_surface_cost_ == true) {
     for (int i = NUM_PIXELS_; i < NUM_PIXELS_ + proposal_num_layers_ * proposal_num_surfaces_; i++) {
+      double surface_pen = penalties_.surface_pen;
+      //double surface_pen = proposal_segments_.at((i - NUM_PIXELS_) % proposal_num_surfaces_).getBehindRoomStructure() ? penalties_.behind_room_structure_surface_pen : penalties_.surface_pen;
+      //double surface_pen = penalties_.surface_pen * (2 - proposal_segments_.at((i - NUM_PIXELS_) % proposal_num_surfaces_).getConfidence());
       vector<int> layer_surface_indicator_proposal = proposal_labels[i];
       const int NUM_PROPOSALS = layer_surface_indicator_proposal.size();
       vector<double> surface_cost(NUM_PROPOSALS);
-      for (int proposal_index = 0; proposal_index < NUM_PROPOSALS; proposal_index++)
-        surface_cost[proposal_index] = layer_surface_indicator_proposal[proposal_index] == 1 ? penalties_.surface_pen : 0;
+      for (int proposal_index = 0; proposal_index < NUM_PROPOSALS; proposal_index++) {
+        surface_cost[proposal_index] = layer_surface_indicator_proposal[proposal_index] == 1 ? surface_pen : 0;
+      }
       nodes[i + indicator_index_offset] = energy->AddNode(TypeGeneral::LocalSize(NUM_PROPOSALS), TypeGeneral::NodeData(&surface_cost[0]));
     }
   }
@@ -413,7 +404,7 @@ vector<int> TRWSFusion::fuse(const vector<vector<int> > &proposal_labels, const 
   if (consider_other_viewpoints) {
     map<int, map<int, vector<double> > > pairwise_costs;
     vector<vector<set<int> > > layer_pixel_surface_pixel_pairs = calcOverlapPixels(proposal_labels);
-    for (int layer_index_1 = 0; layer_index_1 < proposal_num_layers_; layer_index_1++) {
+    for (int layer_index_1 = 0; layer_index_1 < proposal_num_layers_ - 1; layer_index_1++) {
       vector<map<int, vector<int> > > pixel_surface_proposals_map_vec_1(NUM_PIXELS_);
       for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
         vector<int> pixel_proposal = proposal_labels[pixel];
@@ -424,7 +415,7 @@ vector<int> TRWSFusion::fuse(const vector<vector<int> > &proposal_labels, const 
         }
       }
       vector<set<int> > pixel_surface_pixel_pairs_1 = layer_pixel_surface_pixel_pairs[layer_index_1];
-      for (int layer_index_2 = layer_index_1; layer_index_2 < proposal_num_layers_; layer_index_2++) {
+      for (int layer_index_2 = layer_index_1; layer_index_2 < proposal_num_layers_ - 1; layer_index_2++) {
         vector<map<int, vector<int> > > pixel_surface_proposals_map_vec_2(NUM_PIXELS_);
 	if (layer_index_2 == layer_index_1)
 	  pixel_surface_proposals_map_vec_2 = pixel_surface_proposals_map_vec_1;
@@ -463,8 +454,9 @@ vector<int> TRWSFusion::fuse(const vector<vector<int> > &proposal_labels, const 
 		  continue;
 		//cout << surface_id_1 << '\t' << surface_id_2 << '\t' << pixel / NUM_PIXELS_ << '\t' << pixel % NUM_PIXELS_ % IMAGE_WIDTH_ << '\t' << pixel % NUM_PIXELS_ / IMAGE_WIDTH_ << endl;
 		double depth_diff = abs(proposal_segments_.at(surface_id_1).getDepth(pixel_1) - proposal_segments_.at(surface_id_2).getDepth(pixel_2));
-		cost = min(depth_diff * pow(penalties_.smoothness_term_layer_decrease_ratio, proposal_num_layers_ - 1 - layer_index_1) / statistics_.depth_change_smoothness_threshold * penalties_.smoothness_empty_non_empty_ratio, 1.0) * penalties_.other_viewpoint_depth_change_pen + penalties_.smoothness_small_constant_pen;
-	      } else {
+		//cost = min(depth_diff * pow(penalties_.smoothness_term_layer_decrease_ratio, proposal_num_layers_ - 1 - layer_index_1) / statistics_.depth_change_smoothness_threshold * penalties_.smoothness_empty_non_empty_ratio, 1.0) * penalties_.other_viewpoint_depth_change_pen + penalties_.smoothness_small_constant_pen;
+		cost = calcDepthChangeCost(depth_diff);
+              } else {
 		if (proposal_segments_.at(surface_id_1).getDepth(pixel_1) > proposal_segments_.at(surface_id_2).getDepth(pixel_2) + statistics_.depth_conflict_threshold)
 		  cost = penalties_.other_viewpoint_depth_conflict_pen;
 	      }
@@ -1311,9 +1303,9 @@ double TRWSFusion::checkSolutionEnergy(const vector<int> &solution_for_check)
       solution_labels[i].push_back(solution[i]);
     vector<vector<set<int> > > layer_pixel_surface_pixel_pairs = calcOverlapPixels(solution_labels);
     
-    for (int layer_index_1 = 0; layer_index_1 < proposal_num_layers_; layer_index_1++) {
+    for (int layer_index_1 = 0; layer_index_1 < proposal_num_layers_ - 1; layer_index_1++) {
       vector<set<int> > pixel_surface_pixel_pairs_1 = layer_pixel_surface_pixel_pairs[layer_index_1];
-      for (int layer_index_2 = layer_index_1; layer_index_2 < proposal_num_layers_; layer_index_2++) {
+      for (int layer_index_2 = layer_index_1; layer_index_2 < proposal_num_layers_ - 1; layer_index_2++) {
         vector<set<int> > pixel_surface_pixel_pairs_2 = layer_pixel_surface_pixel_pairs[layer_index_2];
         for (vector<set<int> >::const_iterator pixel_it = pixel_surface_pixel_pairs_1.begin(); pixel_it != pixel_surface_pixel_pairs_1.end(); pixel_it++) {
           set<int> surface_pixel_pairs_1 = *pixel_it;
@@ -1338,7 +1330,8 @@ double TRWSFusion::checkSolutionEnergy(const vector<int> &solution_for_check)
                 if (abs(pixel_1 % IMAGE_WIDTH_ - pixel_2 % IMAGE_WIDTH_) <= 1 && abs(pixel_1 / IMAGE_WIDTH_ - pixel_2 / IMAGE_WIDTH_) <= 1)
                   continue;
                 double depth_diff = abs(proposal_segments_.at(surface_id_1).getDepth(pixel_1) - proposal_segments_.at(surface_id_2).getDepth(pixel_2));
-                cost = min(depth_diff / statistics_.depth_change_smoothness_threshold * penalties_.smoothness_empty_non_empty_ratio, 1.0) * penalties_.other_viewpoint_depth_change_pen + penalties_.smoothness_small_constant_pen;
+                //cost = min(depth_diff / statistics_.depth_change_smoothness_threshold * penalties_.smoothness_empty_non_empty_ratio, 1.0) * penalties_.other_viewpoint_depth_change_pen + penalties_.smoothness_small_constant_pen;
+		cost = calcDepthChangeCost(depth_diff);
               } else {
                 if (proposal_segments_.at(surface_id_1).getDepth(pixel_1) > proposal_segments_.at(surface_id_2).getDepth(pixel_2) + statistics_.depth_conflict_threshold) {
                   cost = penalties_.other_viewpoint_depth_conflict_pen;
@@ -1358,7 +1351,10 @@ double TRWSFusion::checkSolutionEnergy(const vector<int> &solution_for_check)
   if (consider_surface_cost_) {
     for (int i = NUM_PIXELS_; i < NUM_PIXELS_ + proposal_num_layers_ * proposal_num_surfaces_; i++) {
       int layer_surface_indicator = solution[i];
-      surface_cost += layer_surface_indicator == 1 ? penalties_.surface_pen : 0;
+      
+      double surface_pen = penalties_.surface_pen;
+      //double surface_pen = penalties_.surface_pen * (2 - proposal_segments_.at((i - NUM_PIXELS_) % proposal_num_surfaces_).getConfidence());
+      surface_cost += layer_surface_indicator == 1 ? surface_pen : 0;
     }
     
     for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
@@ -1426,69 +1422,6 @@ vector<int> TRWSFusion::getOptimalSolution()
       labels[pixel] = proposal_num_surfaces_ * (proposal_num_surfaces_ + 1) * (proposal_num_surfaces_ + 1) + proposal_num_surfaces_ * (proposal_num_surfaces_ + 1) + background_layer[pixel];
   }
   return labels;
-}
-
-void TRWSFusion::calcColorDiffVar()
-{
-  //blurred_image.convertTo(blurred_hsv_image_, CV_32FC3, 1.0 / 255);
-  //cvtColor(blurred_hsv_image_, blurred_hsv_image_, CV_BGR2HSV);
-  
-  
-  // imshow("blurred hsv image", blurred_hsv_image_);
-  // waitKey();
-  // for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
-  //   Vec3f color = blurred_hsv_image_.at<Vec3f>(pixel / IMAGE_WIDTH_, pixel % IMAGE_WIDTH_);
-  //   if (color[0] == 0 && color[1] == 0)
-  //     cout << pixel << '\t' << color << endl;
-  // }
-  // exit(1);
-  
-  double color_diff_sum2 = 0;
-  //double depth_diff_sum2 = 0;
-  int num_pairs = 0;
-  for (int pixel = 0; pixel < NUM_PIXELS_; pixel++) {
-    // if (checkPointValidity(point_cloud_, pixel) == false);
-    //   continue;
-    vector<int> neighbor_pixels;
-    int x = pixel % IMAGE_WIDTH_;
-    int y = pixel / IMAGE_WIDTH_;
-    if (x < IMAGE_WIDTH_ - 1)
-      neighbor_pixels.push_back(pixel + 1);
-    if (y < IMAGE_HEIGHT_ - 1)
-      neighbor_pixels.push_back(pixel + IMAGE_WIDTH_);
-    if (x > 0 && y < IMAGE_HEIGHT_ - 1)
-      neighbor_pixels.push_back(pixel - 1 + IMAGE_WIDTH_);
-    if (x < IMAGE_WIDTH_ - 1 && y < IMAGE_HEIGHT_ - 1)
-      neighbor_pixels.push_back(pixel + 1 + IMAGE_WIDTH_);
-    
-    for (vector<int>::const_iterator neighbor_pixel_it = neighbor_pixels.begin(); neighbor_pixel_it != neighbor_pixels.end(); neighbor_pixel_it++) {
-      int neighbor_pixel = *neighbor_pixel_it;  
-      color_diff_sum2 += pow(calcColorDiff(pixel, neighbor_pixel), 2);
-      //depth_diff_sum2 += pow(neighbor_depth - depth, 2);
-      num_pairs++;
-    }
-  }
-  color_diff_var_ = color_diff_sum2 / num_pairs;
-  cout << "color diff var: " << color_diff_var_ << endl;
-  //cout << "depth diff var: " << depth_diff_sum2 / num_pairs << endl;
-  //depth_diff_var_ = depth_diff_sum2 / num_pairs;
-}
-
-double TRWSFusion::calcColorDiff(const int pixel_1, const int pixel_2)
-{
-  Vec3b color_1 = blurred_hsv_image_.at<Vec3b>(pixel_1 / IMAGE_WIDTH_, pixel_1 % IMAGE_WIDTH_);
-  Vec3b color_2 = blurred_hsv_image_.at<Vec3b>(pixel_2 / IMAGE_WIDTH_, pixel_2 % IMAGE_WIDTH_);
-  
-  
-  //double color_diff = sqrt(pow(color_1[1] * cos(color_1[0] * M_PI / 180) - color_2[1] * cos(color_2[0] * M_PI / 180), 2) + pow(color_1[1] * sin(color_1[0] / 180 * M_PI) - color_2[1] * sin(color_2[0] / 180 * M_PI), 2)); // + pow(color_1[2] * 0.1 - color_2[2] * 0.1, 2));
-  
-  // Vec3b color_1 = blurred_image_.at<Vec3b>(pixel_1 / IMAGE_WIDTH_, pixel_1 % IMAGE_WIDTH_);
-  // Vec3b color_2 = blurred_image_.at<Vec3b>(pixel_2 / IMAGE_WIDTH_, pixel_2 % IMAGE_WIDTH_);
-  double color_diff = 0;
-  for (int c = 0; c < 3; c++)
-    color_diff += pow(color_1[c] - color_2[c], 2);
-  color_diff = sqrt(color_diff / 3);
-  return color_diff;
 }
 
 vector<vector<set<int> > > TRWSFusion::calcOverlapPixels(const vector<vector<int> > &proposal_labels)

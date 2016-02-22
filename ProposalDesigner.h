@@ -39,9 +39,11 @@ class ProposalDesigner{
   
   //generate a proposal
   bool getProposal(int &iteration, std::vector<std::vector<int> > &proposal_labels, int &proposal_num_surfaces, std::map<int, Segment> &proposal_segments, std::string &proposal_type);
+  bool getRefinementProposal(int &iteration, std::vector<std::vector<int> > &proposal_labels, int &proposal_num_surfaces, std::map<int, Segment> &proposal_segments, std::string &proposal_type);
   bool getLastProposal(std::vector<std::vector<int> > &proposal_labels, int &proposal_num_surfaces, std::map<int, Segment> &proposal_segments, std::string &proposal_type);
   //std::string getProposalType();
   std::vector<int> getInitialLabels();
+  int getNumSurfaces() const ;
   void setCurrentSolution(const std::vector<int> &current_solution_labels, const int current_solution_num_surfaces, const std::map<int, Segment> &current_solution_segments);
   void initializeCurrentSolution();
   std::vector<int> getCurrentSolutionIndices();
@@ -59,7 +61,7 @@ class ProposalDesigner{
   const RepresenterPenalties penalties_;
   const DataStatistics statistics_;
   
-  cv::Mat blurred_hsv_image_;
+  cv::Mat image_Lab_;
   
   std::vector<bool> ROI_mask_;
   int NUM_LAYERS_;
@@ -96,10 +98,16 @@ class ProposalDesigner{
   
   int proposal_iteration_;
   const int NUM_PROPOSAL_TYPES_;
+
+  std::vector<std::vector<int> > previous_solution_labels_;
+  const int NUM_PARALLEL_PROPOSALS_;
+  int proposal_type_index_;
+
+  std::set<int> explored_single_surface_expansion_types_;
   
   
   bool generateSegmentRefittingProposal();
-  bool generateSingleSurfaceExpansionProposal(const int segment_id = -1);
+  bool generateSingleSurfaceExpansionProposal(const int denoted_expansion_segment_id = -1, const int denoted_expansion_type = -1);
   bool generateSurfaceDilationProposal();
   bool generateLayerSwapProposal();
   bool generateConcaveHullProposal(const bool consider_background = true);
@@ -117,6 +125,8 @@ class ProposalDesigner{
   bool generateLayerIndicatorProposal();
   bool generatePixelGrowthProposal();
   bool generateRandomMoveProposal();
+  bool generateBehindRoomStructureProposal();
+  bool generateSolutionMergingProposal();
   
   std::vector<int> calcPixelProposals(const int num_surfaces, const std::map<int, std::set<int> > &pixel_layer_surfaces_map);
   
@@ -131,6 +141,9 @@ class ProposalDesigner{
   void writeSegmentationImage(const cv::Mat &segmentation_image, const std::string filename);
   
   void testColorLikelihood();
+
+  std::vector<double> fitColorPlane(const cv::Mat &image, const cv_utils::ImageMask &image_mask);
+  void testColorModels();
 };
 
 

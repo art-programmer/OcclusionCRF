@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <cmath>
+#include <opencv2/core/core.hpp>
 
 struct RepresenterPenalties {
   double depth_inconsistency_pen;
@@ -29,6 +30,7 @@ struct RepresenterPenalties {
   double surface_pen;
   double layer_pen;
   double surface_splitted_pen;
+  double behind_room_structure_surface_pen;
   //double label_pen;
   //double label_indicator_conflict_pen;
   
@@ -75,7 +77,11 @@ struct RepresenterPenalties {
   double data_cost_weight;
   double behind_room_structure_cost_ratio;
   
-  double max_depth_change_ratio;
+  double max_depth_change;
+  double max_depth_diff;
+  double max_angle_diff;
+  double max_color_diff;
+  
   //  double depth_conflict_ratio_threshold;
   
   //  double plane_fitting_ratio_confidence_threshold;
@@ -105,6 +111,10 @@ struct DataStatistics {
   double num_grams = 20;
   double fitted_pixel_ratio_threshold;
   double segment_refitting_common_ratio_threshold;
+  double color_diff_var;
+
+  double pixel_weight_curvature_ratio = 10;
+  double min_pixel_weight = 10;
   
   /* friend std::ostream & operator <<(std::ostream &out_str, const DataStatistics &statistics) */
   /* { */
@@ -126,6 +136,10 @@ struct DataStatistics {
   /*   depth_conflict_threshold = fitting_distance_threshold; */
   /*   depth_change_smoothness_threshold = fitting_distance_threshold * 0.5; */
   /* } */
+
+  
+  static double calcColorDiffVar(cv::Mat &image);
+  
 };
 
 #endif /* defined(__LayerDepthMap__DataStructures__) */

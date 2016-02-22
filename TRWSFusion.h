@@ -44,7 +44,7 @@ class TRWSFusion
  private:
   const int IMAGE_WIDTH_, IMAGE_HEIGHT_, NUM_PIXELS_;
   const cv::Mat image_;
-  cv::Mat blurred_hsv_image_;
+  cv::Mat image_Lab_;
   const vector<double> point_cloud_;
   const vector<double> normals_;
   std::vector<double> pixel_weights_3D_;
@@ -66,8 +66,6 @@ class TRWSFusion
   vector<int> solution_;
   vector<int> ori_labels_;
   
-  double color_diff_var_;
-  
   
   MRFEnergy<TypeGeneral> *initializeEnergyFromCalculation();
   MRFEnergy<TypeGeneral> *initializeEnergyFromFile();
@@ -81,10 +79,10 @@ class TRWSFusion
   
   //void calcDepthSVar();
   
-  void calcColorDiffVar();
-  double calcColorDiff(const int pixel_1, const int pixel_2);
   
   vector<vector<set<int> > > calcOverlapPixels(const vector<vector<int> > &proposal_labels);
+
+  double calcDepthChangeCost(const double depth_change);
 };
 
 #endif /* defined(__LayerDepthMap__TRWSFusion__) */
